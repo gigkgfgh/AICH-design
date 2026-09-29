@@ -1,0 +1,16 @@
+{
+  "name": "@aichdesign/skills",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AICH Design 产品 Skill 包：plan-draft（L2 指令 + references/schema + references/render-spec，P009）。SKILL.md 遵循 Anthropic Agent Skills 开放标准（§4.1）",
+  "type": "module",
+  "files": ["plan-draft"],
+  "exports": {
+    "./plan-draft/SKILL.md": "./plan-draft/SKILL.md",
+    "./plan-draft/references/schema.json": "./plan-draft/references/schema.json",
+    "./plan-draft/references/render-spec.md": "./plan-draft/references/render-spec.md"
+  },
+  "scripts": {
+    "test": "echo \"skills: frontmatter 合规与渐进披露注入由 reviewer 审查（P009 验收）\""
+  }
+}

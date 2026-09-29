@@ -1,0 +1,19 @@
+{
+  "name": "aich-design",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AICH Design 桌面端 AI 建筑平面方案设计工具（monorepo：app / agent-service / skills / extensions / shared / mock-provider）",
+  "workspaces": [
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "start:agent-service": "npm run start -w @aichdesign/agent-service"
+  }
+}

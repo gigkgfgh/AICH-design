@@ -1,0 +1,26 @@
+{
+  "name": "@aichdesign/keystore",
+  "version": "0.1.0",
+  "private": true,
+  "description": "P016 密钥存储：KeyStorePort 抽象 + AesGcmFileKeyStore（口令 scrypt 派生主密钥，条目级 AES-256-GCM，版本化 JSON，篡改检测 fail-closed）",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest --run",
+    "lint": "vitest --run"
+  },
+  "devDependencies": {
+    "@types/node": "^22.5.0",
+    "typescript": "~5.6.2",
+    "vitest": "^2.1.1"
+  }
+}

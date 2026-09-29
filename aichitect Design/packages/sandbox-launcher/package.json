@@ -1,0 +1,26 @@
+{
+  "name": "@aichdesign/sandbox-launcher",
+  "version": "0.1.0",
+  "private": true,
+  "description": "P015 沙箱启动器：声明式策略（fail-closed）+ 最小权限降级启动包装（环境白名单裁剪/显式 cwd/自检）。P002-SP 真机结论：AppContainer/低完整性需 native helper 或管理员权限，本轮降级实现（README 登记）",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest --run",
+    "lint": "vitest --run"
+  },
+  "devDependencies": {
+    "@types/node": "^22.5.0",
+    "typescript": "~5.6.2",
+    "vitest": "^2.1.1"
+  }
+}

@@ -1,0 +1,37 @@
+{
+  "name": "@aichdesign/app",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AICH Design 桌面客户端（P007 Electron 壳 + ChatPanel / P010 PlanCanvas + VersionTree + 对话修改流，mock 先行）",
+  "type": "module",
+  "main": "dist-electron/electron/main.js",
+  "scripts": {
+    "dev": "concurrently -k \"npm:dev:renderer\" \"npm:dev:electron\"",
+    "dev:renderer": "vite",
+    "dev:electron": "npm run build:electron && electron .",
+    "build": "npm run typecheck && npm run build:electron && vite build",
+    "build:electron": "tsc -p tsconfig.electron.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.electron.json",
+    "lint": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@aichdesign/shared": "*",
+    "@aichdesign/storage": "*",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.5.0",
+    "@types/react": "^18.3.5",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "concurrently": "^9.0.1",
+    "electron": "^35.0.0",
+    "typescript": "~5.6.2",
+    "vite": "^5.4.6",
+    "vitest": "^2.1.9"
+  }
+}

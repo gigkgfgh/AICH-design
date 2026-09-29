@@ -1,0 +1,29 @@
+{
+  "name": "@aichdesign/storage",
+  "version": "0.1.0",
+  "private": true,
+  "description": "P017 存储包：node:sqlite（DatabaseSync）meta.db 访问层——PRAGMA user_version 迁移体系（备份先行/幂等/fail-closed）+ session/plan_version/image_version/cost_summary 表与 Repository（版本树/费用/图像元数据）",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest --run",
+    "lint": "vitest --run"
+  },
+  "dependencies": {
+    "@aichdesign/shared": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.5.0",
+    "typescript": "~5.6.2",
+    "vitest": "^2.1.1"
+  }
+}
