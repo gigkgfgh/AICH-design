@@ -10,15 +10,8 @@ export { openStorage } from "./storage.js";
 export type { StorageHandle } from "./storage.js";
 export {
   SessionRepository,
-  PlanVersionRepository,
   ImageMetaRepository,
   CostRepository,
   deleteSessionCascade,
 } from "./repositories.js";
-export type {
-  SessionRecord,
-  PlanVersionRecord,
-  PlanVersionUpsert,
-  ImageVersionRecord,
-  CostRecord,
-} from "./repositories.js";
+export type { SessionRecord, ImageVersionRecord, CostRecord } from "./repositories.js";

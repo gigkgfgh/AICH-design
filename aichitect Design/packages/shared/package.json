@@ -2,7 +2,7 @@
   "name": "@aichdesign/shared",
   "version": "0.1.0",
   "private": true,
-  "description": "AICH Design 跨包契约：跨层统一消息契约（AgentRequest/AgentResponse/SSE 信封）、PlanStructure + planschema.json、ToolDef/SkillDef/ExtensionDef、AgentRuntimePort、错误码与错误响应结构",
+  "description": "AICH Design 跨包契约：跨层统一消息契约（AgentRequest/AgentResponse/SSE 信封）、ToolDef/SkillDef/ExtensionDef、AgentRuntimePort、错误码与错误响应结构",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -12,7 +12,7 @@
       "import": "./dist/index.js"
     }
   },
-  "files": ["dist", "planschema.json"],
+  "files": ["dist"],
   "scripts": {
     "typecheck": "tsc --noEmit",
     "build": "tsc -p tsconfig.build.json",

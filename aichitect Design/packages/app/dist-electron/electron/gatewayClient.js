@@ -309,7 +309,7 @@ function statusToErrorCode(status, EC) {
         case 409:
             return EC.CONFLICT;
         case 422:
-            return EC.PLAN_VALIDATE_FAILED;
+            return EC.INVALID_REQUEST;
         case 408:
         case 502:
         case 504:

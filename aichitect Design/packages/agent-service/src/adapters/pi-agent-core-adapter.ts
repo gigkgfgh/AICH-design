@@ -13,6 +13,7 @@
 
 import type {
   AgentEvent,
+  AgentMessage,
   AgentTool,
   AgentToolResult,
   StreamFn,
@@ -26,17 +27,18 @@ import type { AgentRegistration } from "../agents/presets.js";
 import type {
   AgentRuntimePort,
   AgentResponse,
-  PlanStructure,
   RunHandle,
   RunRequest,
   RunStatus,
   SseEventEnvelope,
+  SseUsageData,
 } from "@aichdesign/shared";
 import { ErrorCode, makeEnvelope } from "@aichdesign/shared";
 import { AsyncQueue } from "../runtime/async-queue.js";
+import { replayTranscript } from "../session/transcript-replay.js";
 import { JsonlSessionStore } from "../session/jsonl-store.js";
 import type { UsageRecord } from "../telemetry/usage-tracker.js";
-import { findBinding, newVersionId, promptOf, type ToolBinding } from "./common.js";
+import { findBinding, promptOf, type ToolBinding } from "./common.js";
 import { DEEPSEEK_THINKING_LEVEL_MAP, isDeepSeekBaseUrl } from "../llm/model.js";
 import type { ImageApiResult } from "./image-api.js";
 import type { ImageRegisterContext, ImageRegistry, RegisteredImage } from "../image/image-registry.js";
@@ -55,12 +57,6 @@ export interface PiAgentCoreAdapterOptions {
   streamFn: StreamFn;
   /** 系统提示词（含全部 Skill L1 元数据；由 main 组装）。 */
   systemPrompt: string;
-  /**
-   * P019 会话上下文注入（ADR-003）：会话 Agent 创建时调用，返回值附加到系统提示
-   * （压缩摘要 + 硬约束 + 版本树引用）。空字符串 = 不附加。
-   * 边界：Agent 按会话缓存，长会话内再压缩的刷新待 Agent 缓存失效机制（后续轮）。
-   */
-  contextProvider?: (sessionId: string) => string;
   tools: ToolBinding[];
   getApiKey?: (provider: string) => Promise<string | undefined> | string | undefined;
   usageSink: (r: UsageRecord) => void;
@@ -121,12 +117,32 @@ interface SessionAgent {
   thinkingSlot: { level: import("@aichdesign/shared").ThinkingLevel | undefined };
 }
 
+/** pi-ai Usage 的宿主侧投影（R7-2：与内核 Usage 字段名对齐——原 total 笔误致 totalTokens 记账为 undefined）。 */
 interface ExtractUsage {
   input: number;
   output: number;
   cacheRead: number;
   cacheWrite: number;
-  total: number;
+  reasoning?: number;
+  totalTokens: number;
+}
+
+/**
+ * R7-2：token 启发式估算（DSH 同口径：固定密度近似；仅用于上下文构成展示，非计费值）。
+ * CJK ≈ 1 token/字，其余 ≈ 4 字符/token。
+ */
+export function estimateTokensHeuristic(text: string): number {
+  let cjk = 0;
+  let other = 0;
+  for (const ch of text) {
+    const code = ch.codePointAt(0)!;
+    if ((code >= 0x4e00 && code <= 0x9fff) || (code >= 0x3000 && code <= 0x303f) || (code >= 0xff00 && code <= 0xffef)) {
+      cjk += 1;
+    } else {
+      other += 1;
+    }
+  }
+  return cjk + Math.ceil(other / 4);
 }
 
 export class PiAgentCoreAdapter implements AgentRuntimePort {
@@ -199,7 +215,6 @@ export class PiAgentCoreAdapter implements AgentRuntimePort {
     const { model, tools, usageSink, sessionStore, systemPrompt, getApiKey, imageRegistry } = this.options;
     const queue = new AsyncQueue<SseEventEnvelope>();
     const startedAt = Date.now();
-    const versionId = newVersionId();
     const { requestId, sessionId, signal } = req;
     // R6-13：单次运行工具调用轮次上限（默认 25；≤0 = 不限制）。
     const maxToolCalls = this.options.maxToolCalls ?? 25;
@@ -214,15 +229,15 @@ export class PiAgentCoreAdapter implements AgentRuntimePort {
       const runModel =
         req.model && this.options.buildModelOverride ? this.options.buildModelOverride(req.model) : model;
       const registration = this.options.registrations?.[req.agent ?? "main"];
-      let systemPromptWithCtx = registration?.skillBody
+      const systemPromptWithCtx = registration?.skillBody
         ? systemPrompt + "\n\n" + registration.skillBody
         : systemPrompt;
-      if (this.options.contextProvider) {
-        const injection = this.options.contextProvider(sessionId);
-        if (injection) {
-          systemPromptWithCtx = `${systemPromptWithCtx}\n\n${injection}`;
-        }
-      }
+      // R7-1：转录回放（替代 P019 contextProvider 注入）——会话 Agent 创建时从 jsonl
+      // 重建历史消息装入内核转录，重启后 LLM 上下文与 UI 记忆对齐（全量保留，无压缩）。
+      // 创建发生于当前 run 的 user 条目落盘之前，回放天然不含当前请求。
+      const replayed = this.options.sessionStore
+        ? replayTranscript(this.options.sessionStore, sessionId, this.options.imageRegistry)
+        : [];
       // R6-17：思考档位槽位（Agent 创建前声明；run 每次更新 → streamFn 逐次读取）。
     const sessionThinkingSlot: SessionAgent["thinkingSlot"] = {
       level: req.thinking ?? this.options.defaultThinking,
@@ -232,6 +247,8 @@ export class PiAgentCoreAdapter implements AgentRuntimePort {
           systemPrompt: systemPromptWithCtx,
           model: runModel,
           tools: this.toolsForAgent(req.agent),
+          // 结构最小集与内核 AgentMessage 结构兼容（user/assistant 文本+图片块）。
+          ...(replayed.length > 0 ? { messages: replayed as unknown as AgentMessage[] } : {}),
         },
         streamFn: this.wrapStreamFn(sessionThinkingSlot),
         getApiKey,
@@ -289,9 +306,10 @@ export class PiAgentCoreAdapter implements AgentRuntimePort {
       if (!self.options.loopLogPath) return;
       loopTurns.push({ ts: new Date().toISOString(), kind, payload });
     };
-    let planResult: { svg: string; structure: PlanStructure; versionId: string } | null = null;
     let imageResult: RegisteredImage | null = null;
     let terminalError: { code: string; message: string } | null = null;
+    // R7-2：本 run 的上下文构成估算缓存（system/tool/窗口；首次 usage 事件时计算一次）。
+    let contextEstimate: SseUsageData["context"] | null = null;
 
     const unsubscribe = agent.subscribe((event: AgentEvent, kernelSignal: AbortSignal) => {
       // R008：内核侧 signal 中止（内核内部主动 abort / agent.abort() 已触发）时，
@@ -331,6 +349,8 @@ export class PiAgentCoreAdapter implements AgentRuntimePort {
           const msg = event.message as { usage?: ExtractUsage };
           if (msg.usage) {
             recordUsage(msg.usage);
+            // R7-2：用量 SSE（每次 LLM 调用一轮；渲染层据此显示上下文/缓存命中/累计）。
+            queue.push(makeEnvelope(requestId, sessionId, "usage", usageDataOf(msg.usage, agent)));
           }
           break;
         }
@@ -359,14 +379,6 @@ export class PiAgentCoreAdapter implements AgentRuntimePort {
           );
           const binding = findBinding(tools, event.toolName);
           if (!binding || event.isError) break;
-          if (binding.def.name === "render_plan_svg") {
-            const details = (event.result as { details?: unknown }).details as
-              | { svg?: string; structure?: PlanStructure }
-              | undefined;
-            if (details?.svg && details.structure) {
-              planResult = { svg: details.svg, structure: details.structure, versionId };
-            }
-          }
           if (binding.def.name === "image_generate" || binding.def.name === "image_edit") {
             const phase = binding.def.name === "image_generate" ? "image_generate" : "image_edit";
             // P1 修复（R2-REV 前回退）：pi 内核事件流无 phase 语义，在工具执行结束节点补发同型
@@ -408,41 +420,92 @@ export class PiAgentCoreAdapter implements AgentRuntimePort {
         completionTokens: u.output,
         cacheReadTokens: u.cacheRead,
         cacheWriteTokens: u.cacheWrite,
-        totalTokens: u.total,
+        totalTokens: u.totalTokens,
         costUsd,
         latencyMs: Date.now() - startedAt,
         ok: true,
         ts: new Date().toISOString(),
       };
       usageSink(rec);
-      sessionStore?.append(sessionId, "usage", rec, requestId);
+      // R7-2 补：落盘载荷附 context 静态估算快照（UI 重启后用量胶囊恢复窗口分母/构成；旧数据无此段）。
+      sessionStore?.append(sessionId, "usage", { ...rec, context: usageDataOf(u, agent).context }, requestId);
     }
 
-    // 用户消息入会话 jsonl。
+    /**
+     * R7-2：turn usage → SSE usage 载荷。context 段为静态估算（系统提示词/工具定义，
+     * 按当前 Agent 的 systemPrompt 与工具集一次估出）；contextWindow 取活动模型声明
+     * （条目配置优先，见 buildLlmModel；DeepSeek 官方 1M）。
+     */
+    function usageDataOf(u: ExtractUsage, agentRef: Agent): SseUsageData {
+      if (!contextEstimate) {
+        const toolsJson = agentRef.state.tools
+          .map((t) => `${t.name}${t.description ?? ""}${JSON.stringify(t.parameters ?? {})}`)
+          .join("");
+        contextEstimate = {
+          systemTokens: estimateTokensHeuristic(agentRef.state.systemPrompt),
+          toolTokens: estimateTokensHeuristic(toolsJson),
+          contextWindow: agentRef.state.model?.contextWindow ?? 128_000,
+        };
+      }
+      return {
+        promptTokens: u.input + u.cacheRead + u.cacheWrite,
+        completionTokens: u.output,
+        cacheReadTokens: u.cacheRead,
+        cacheWriteTokens: u.cacheWrite,
+        ...(u.reasoning !== undefined ? { reasoningTokens: u.reasoning } : {}),
+        totalTokens: u.totalTokens,
+        context: contextEstimate,
+      };
+    }
+
+    // 用户消息入会话 jsonl（R7-1：图片引用 id 一并落盘——转录回放时经 ImageRegistry 还原为 base64）。
     const userPrompt = promptOf(req.request);
-    sessionStore?.append(sessionId, "user", { text: userPrompt, kind: req.request.kind }, requestId);
+    const requestedImageIds = req.analysisImageIds ?? [];
+    sessionStore?.append(
+      sessionId,
+      "user",
+      {
+        text: userPrompt,
+        kind: req.request.kind,
+        ...(requestedImageIds.length > 0 ? { imageIds: requestedImageIds } : {}),
+      },
+      requestId,
+    );
 
     // R6-11：多模态——请求携带 analysisImageIds 时，把已注册图片读为 base64 交 LLM 视觉分析。
     // DeepSeek/OpenAI 官方要求：jpeg/png/webp；base64 传输（file:// 本地读取转码）；单图 ≤8MB。
     let analysisImages: Array<{ type: 'image'; data: string; mimeType: string }> | undefined;
-    for (const imageId of req.analysisImageIds ?? []) {
+    const unresolvedImageIds: string[] = [];
+    for (const imageId of requestedImageIds) {
       const url = imageRegistry?.resolveUrl(imageId);
-      if (!url || !url.startsWith('file://')) continue;
+      if (!url || !url.startsWith('file://')) {
+        unresolvedImageIds.push(imageId);
+        continue;
+      }
       try {
         const bytes = readFileSync(fileURLToPath(url));
-        if (bytes.length > 8 * 1024 * 1024) continue;
+        if (bytes.length > 8 * 1024 * 1024) {
+          unresolvedImageIds.push(imageId);
+          continue;
+        }
         const ext = url.split('.').pop()?.toLowerCase() ?? '';
         const mime = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg';
         (analysisImages ??= []).push({ type: 'image' as const, data: bytes.toString('base64'), mimeType: mime });
       } catch {
-        continue;
+        unresolvedImageIds.push(imageId);
       }
     }
+    // R7-1：图片未能加载不再静默跳过——向 LLM 与用户显式说明（此前重启后注册表失效，
+    // 图片被无声丢弃，模型答"图没传过来"且无从排查）。
+    const effectivePrompt =
+      unresolvedImageIds.length > 0
+        ? `${userPrompt}\n\n[系统] 附件图片未能加载（共 ${unresolvedImageIds.length} 张：${unresolvedImageIds.join("、")}）——请告知用户图片未送达，不要假设图片内容。`
+        : userPrompt;
     const self = this;
     // 运行：prompt 完成后终结（agent_end 事件先于 prompt resolve 发出）。
     const outcomePromise = (async () => {
       try {
-        await agent.prompt(userPrompt, analysisImages);
+        await agent.prompt(effectivePrompt, analysisImages);
       } catch (error) {
         // 超时中止引发的异常不覆盖超时原因（保持面向用户的真实错误语义）。
         if (!forcedStopMessage) {
@@ -488,13 +551,6 @@ export class PiAgentCoreAdapter implements AgentRuntimePort {
       } else if (imageResult) {
         // P012：SSE done image 载荷（设计 §5.4 / shared contracts.ts 冻结文本）。
         final = { kind: "image", imageId: imageResult.imageId, url: imageResult.url, meta: imageResult.meta };
-      } else if (planResult) {
-        final = {
-          kind: "plan",
-          svg: planResult.svg,
-          structure: planResult.structure,
-          versionId: planResult.versionId,
-        };
       } else {
         final = { kind: "stream", delta: accumulatedDelta };
       }
@@ -511,8 +567,8 @@ export class PiAgentCoreAdapter implements AgentRuntimePort {
         final.kind === "error" ? "error" : "assistant",
         {
           kind: final.kind,
-          versionId: final.kind === "plan" ? final.versionId : undefined,
-          text: final.kind === "stream" ? final.delta : undefined,
+          // R7-1：统一携带最终 assistant 文本（含 image/plan 终态轮）——转录回放的数据源。
+          text: final.kind === "error" ? undefined : lastAssistantText(agent.state.messages) || accumulatedDelta || undefined,
           imageId: final.kind === "image" ? final.imageId : undefined,
           url: final.kind === "image" ? final.url : undefined,
         },
@@ -559,6 +615,28 @@ function imageContextOf(request: RunRequest["request"]): ImageRegisterContext {
     return { parentImageId: request.imageId, maskId: request.maskId };
   }
   return {};
+}
+
+/**
+ * R7-1：提取内核转录中最后一条 assistant 消息的文本（jsonl assistant 条目统一携带，
+ * 供服务重启后的转录回放）。找不到含文本的 assistant 消息返回 ""。
+ */
+function lastAssistantText(messages: AgentMessage[]): string {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const m = messages[i] as { role?: unknown; content?: unknown } | undefined;
+    if (!m || m.role !== "assistant") continue;
+    const blocks = Array.isArray(m.content) ? (m.content as unknown[]) : [];
+    const text = blocks
+      .map((b) =>
+        b && typeof b === "object" && (b as { type?: unknown }).type === "text" && typeof (b as { text?: unknown }).text === "string"
+          ? (b as { text: string }).text
+          : "",
+      )
+      .join("")
+      .trim();
+    if (text.length > 0) return text;
+  }
+  return "";
 }
 /**
  * R6-17：DeepSeek 请求体改写（fetch 包装）——思考参数对齐 api-docs.deepseek.com 官方形状：

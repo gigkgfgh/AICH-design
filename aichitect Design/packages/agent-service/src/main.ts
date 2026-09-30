@@ -14,7 +14,6 @@ import { mkdirSync } from "node:fs";
 import * as nodePath from "node:path";
 import { pathToFileURL } from "node:url";
 import { loadConfig } from "./config.js";
-import { applyPlanPatch, renderSvgPlan, validatePlan, validatePlanStrict } from "@aichdesign/extensions";
 import { IMAGE_GENERATE_TOOL_DEF, IMAGE_EDIT_TOOL_DEF, validateImageGenerateParams, validateImageEditParams } from "@aichdesign/extensions";
 import { createMockChatStream, createMockModel } from "@aichdesign/mock-provider";
 import { JsonlSessionStore } from "./session/jsonl-store.js";
@@ -33,88 +32,6 @@ import { buildDispatchToolBinding } from "./tools/dispatch.js";
 import { loadSkillsFromDirs, buildReadSkillBinding, skillsPromptSection } from "./skills/loader.js";
 import type { ExternalSkill } from "./skills/loader.js";
 import { AGENT_REGISTRATIONS } from "./agents/presets.js";
-
-/**
- * P011 校验失败率对比（基线口径，README 登记）：
- * - 每次 validate_plan 工具执行计 1 次 total（无论开关）；
- * - lenientFailures：宽容档校验失败计数；
- * - strictFailures：仅 AICH_STRICT_JSON=1 时累加（严格失败必然可被宽容档放过——
- *   典型如缺 areaM2/thicknessMm/schemaVersion 或越界，这正是严格档的拦截价值）；
- * - 失败时打日志（stderr），统计口径以 README「P011 校验失败率对比」为准。
- */
-export interface ValidationStats {
-  total: number;
-  lenientFailures: number;
-  strictFailures: number;
-}
-
-export function createValidationStats(): ValidationStats {
-  return { total: 0, lenientFailures: 0, strictFailures: 0 };
-}
-
-/** 组装产品工具绑定（plan-tools extension，P008 交付的内容在本进程内可执行）。 */
-export function buildPlanToolBindings(options?: { strictJson?: boolean; stats?: ValidationStats }): ToolBinding[] {
-  const strictJson = options?.strictJson ?? true;
-  const stats = options?.stats;
-  const renderSchema = { type: "object", properties: { plan: { type: "object" } }, required: ["plan"] };
-  const patchSchema = {
-    type: "object",
-    properties: { plan: { type: "object" }, patch: { type: "array" } },
-    required: ["plan", "patch"],
-  };
-  return [
-    {
-      def: {
-        name: "validate_plan",
-        description: "校验 PlanStructure：结构、范围与引用完整性（rooms.adjacentTo / openings.wallId 引用存在）。返回 { valid, errors }。",
-        label: "校验平面方案",
-        parameters: { type: "object", properties: { plan: { type: "object" } }, required: ["plan"] },
-      },
-      execute: async (params) => {
-        // P011：宽容与严格双跑（对比基线），实际生效档由 AICH_STRICT_JSON 决定。
-        if (stats) stats.total += 1;
-        const lenient = validatePlan(params.plan);
-        if (!lenient.valid && stats) stats.lenientFailures += 1;
-        const result = strictJson ? validatePlanStrict(params.plan) : lenient;
-        if (strictJson && !result.valid && stats) {
-          stats.strictFailures += 1;
-          process.stderr.write(
-            `[validate-strict] 严格档校验失败 total=${stats.total} 宽容失败=${stats.lenientFailures} 严格失败=${stats.strictFailures}：${result.errors.slice(0, 3).join("；")}\n`,
-          );
-        }
-        const text = result.valid ? "plan 校验通过" : `plan 校验失败：${result.errors.join("；")}`;
-        return { text, details: { strict: strictJson, valid: result.valid, errors: result.errors, warnings: result.warnings }, isError: !result.valid };
-      },
-    },
-    {
-      def: {
-        name: "render_plan_svg",
-        description: "将 PlanStructure 渲染为 SVG 字符串（50px/m，图层序：墙体→房间→开口→标注→指北针）。返回 { svg, structure }。",
-        label: "渲染平面 SVG",
-        parameters: renderSchema,
-      },
-      execute: async (params) => {
-        const svg = renderSvgPlan(params.plan);
-        return { text: `已渲染 SVG（${svg.length} 字符）`, details: { svg, structure: params.plan } };
-      },
-    },
-    {
-      def: {
-        name: "plan_patch",
-        description: "对 PlanStructure 应用增量补丁（校验回环 ≤2 + 降级输出）。返回 { plan, valid, errors, loops, degraded }。",
-        label: "应用方案补丁",
-        parameters: patchSchema,
-      },
-      execute: async (params) => {
-        const result = applyPlanPatch(params.plan, params.patch);
-        const text = result.valid
-          ? `补丁已应用（回环 ${result.loops} 次）`
-          : `补丁已降级应用（回环超限，见 errors）`;
-        return { text, details: result, isError: !result.valid };
-      },
-    },
-  ];
-}
 
 /**
  * 组装图像工具绑定（image-tools extension，P012）：
@@ -234,7 +151,6 @@ async function resolveAdapter(
     sessionStore: JsonlSessionStore;
     imageRegistry: ImageRegistry;
     mockDelayMs: number;
-    contextBudgetTokens?: number;
     /** R5：真实 LLM 端点配置（旧单模型兼容）。 */
     llm?: ReturnType<typeof loadConfig>["llm"];
     /** R6-6：多模型条目。 */
@@ -249,7 +165,7 @@ async function resolveAdapter(
     maxToolCalls?: number;
   },
 ): Promise<{ adapter: AgentRuntimePort; label: string }> {
-  const { tools, usageTracker, sessionStore, imageRegistry, mockDelayMs, contextBudgetTokens, loopLogPath, maxToolCalls } = context;
+  const { tools, usageTracker, sessionStore, imageRegistry, mockDelayMs, loopLogPath, maxToolCalls } = context;
   // P018：同 requestId 仅保留最后一次记账（重试不重复计费，ADR-006）。
   const usageSink = (r: Parameters<UsageTracker["record"]>[0]) => usageTracker.recordOnce(r);
 
@@ -281,7 +197,7 @@ async function resolveAdapter(
         let firstModel: import("@earendil-works/pi-ai").Model<"openai-completions"> | null = null;
         for (const entry of llmModels) {
           const providerId = `aich-llm-${entry.id}`;
-          const m = buildLlmModel({ baseURL: entry.baseUrl, apiKeyRef: entry.apiKey, model: entry.model }, undefined, providerId);
+          const m = buildLlmModel({ baseURL: entry.baseUrl, apiKeyRef: entry.apiKey, model: entry.model, imageInput: entry.imageInput, contextWindow: entry.contextWindow }, undefined, providerId);
           if (!m) continue;
           modelsRegistry.setProvider(
             piAi.createProvider({
@@ -305,8 +221,8 @@ async function resolveAdapter(
           const entries = llmModels;
           buildModelOverride = (modelId: string) => {
             const hit = entries.find((e) => e.model === modelId || e.id === modelId);
-            if (!hit) return buildLlmModel({ baseURL: entries[0]!.baseUrl, apiKeyRef: entries[0]!.apiKey, model: modelId }, undefined, `aich-llm-${entries[0]!.id}`)!;
-            return buildLlmModel({ baseURL: hit.baseUrl, apiKeyRef: hit.apiKey, model: hit.model }, undefined, `aich-llm-${hit.id}`)!;
+            if (!hit) return buildLlmModel({ baseURL: entries[0]!.baseUrl, apiKeyRef: entries[0]!.apiKey, model: modelId, imageInput: entries[0]!.imageInput, contextWindow: entries[0]!.contextWindow }, undefined, `aich-llm-${entries[0]!.id}`)!;
+            return buildLlmModel({ baseURL: hit.baseUrl, apiKeyRef: hit.apiKey, model: hit.model, imageInput: hit.imageInput, contextWindow: hit.contextWindow }, undefined, `aich-llm-${hit.id}`)!;
           };
           label = `llm×${llmModels.length}:${firstModel.id}`;
           process.stderr.write(`[agent-service] 多模型已接线 ${llmModels.map((e) => e.model).join("、")}（激活 ${firstModel.id}）\n`);
@@ -341,9 +257,6 @@ async function resolveAdapter(
           process.stderr.write(`[agent-service] 真实 LLM 已接线 ${realModel.baseUrl} model=${realModel.id}\n`);
         }
       }
-      // P019：会话上下文注入链（ADR-003）——摘要 + 硬约束 + 版本树引用附加进系统提示。
-      const { ContextManager } = await import("./session/context-manager.js");
-      const contextManager = new ContextManager(sessionStore, { budgetTokens: contextBudgetTokens });
       // R6-8：全部技能（内置+外部同机制）——统一列表注入 + read_skill 按需取全文（start() 已合并加载）。
       const externalSkills: ExternalSkill[] = context.skills ?? [];
       if (externalSkills.length > 0) {
@@ -364,7 +277,6 @@ async function resolveAdapter(
         buildModelOverride,
         systemPrompt: buildSystemPrompt(externalSkills),
         registrations,
-        contextProvider: (sessionId) => contextManager.contextInjection(contextManager.snapshot(sessionId)),
         defaultThinking,
         tools: readSkillBinding ? [...tools, readSkillBinding] : tools,
         usageSink,
@@ -400,11 +312,15 @@ export async function start(overrides: Partial<ReturnType<typeof loadConfig>> = 
   const token = config.token ?? `aich_${randomBytes(24).toString("hex")}`;
   const sessionStore = new JsonlSessionStore(config.sessionsDir);
   const usageTracker = new UsageTracker();
-  const stats = createValidationStats();
   const imageRegistry = new ImageRegistry(config.sessionsDir, sessionStore);
+  // R7-1：从会话 jsonl 重建 imageId→file:// 映射（修复重启后注册表失效、上传图"读不到"）。
+  const rehydratedImages = imageRegistry.rehydrate();
+  if (rehydratedImages > 0) {
+    process.stderr.write(`[agent-service] 图像注册表已从会话记录回填 ${rehydratedImages} 条
+`);
+  }
   const { port: imagePort, label: imageLabel } = resolveImagePort(config, [imageRegistry.dir]);
   const tools = [
-    ...buildPlanToolBindings({ strictJson: config.strictJson, stats }),
     ...buildImageToolBindings(imagePort),
     // R5：联网检索工具（research 预设专用；默认 disabled 时工具返回引导文案）
     ...buildSearchToolBindings(config.search),
@@ -421,7 +337,7 @@ export async function start(overrides: Partial<ReturnType<typeof loadConfig>> = 
   // R6-8：技能合并加载（内置目录 + 用户目录，同名用户覆盖；image-gen 首要排序）。
   const externalSkills = loadSkillsFromDirs(
     [config.builtinSkillsDir, config.skillsDir].filter((d): d is string => !!d && d.length > 0),
-    ["image-gen", "research", "plan-draft"],
+    ["image-gen", "research"],
   );
 
   const { adapter, label } = await resolveAdapter(config.adapter, {
@@ -430,7 +346,6 @@ export async function start(overrides: Partial<ReturnType<typeof loadConfig>> = 
     sessionStore,
     imageRegistry,
     mockDelayMs: config.mockDelayMs,
-    contextBudgetTokens: config.contextBudgetTokens,
     llm: config.llm,
     llmModels: config.llmModels,
     llmActiveId: config.llmActiveId,

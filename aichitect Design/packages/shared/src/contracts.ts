@@ -2,85 +2,15 @@
  * 跨层统一消息契约（冻结文本）——唯一权威来源
  *
  * 契约来源（冻结依据，禁止单方面扩展字段语义）：
- * - 设计文档 §5.2 PlanStructure JSON Schema（含 ADR-005 顶层 schemaVersion）
  * - 设计文档 §8.3 AgentRequest / AgentResponse（跨两层统一消息契约）
  * - 设计文档 ADR-004 SSE 事件信封 { requestId, sessionId, type, data }
- * - 运行时结构化 schema 见 ./planschema.json（与本节类型一一对应）
  *
  * 变更纪律（AGENTS.md 铁律 3）：任何字段重命名 / 增删 / 语义变化必须写入
- * .handoffs/ 交接文档「依赖信息」并通知 frontend / reviewer 窗口。
+ * 交接文档「依赖信息」并通知 frontend / reviewer 窗口。
+ *
+ * R7-1（2026-09-29）：方案（PlanStructure）/版本树全链路移除——应用聚焦「对话 + 图像生成」；
+ * 请求新增 kind:"chat"（通用对话），draftPlan/editPlan/listVersions 与响应 plan 分支删除。
  */
-
-/* ---------------- PlanStructure（§5.2 + ADR-005） ---------------- */
-
-/** 方案总尺寸（米）。 */
-export interface PlanBounds {
-  widthM: number;
-  heightM: number;
-}
-
-/** 房间功能类型枚举（冻结，对应 planschema.json rooms[].type enum）。 */
-export type RoomType =
-  | "bedroom"
-  | "living"
-  | "kitchen"
-  | "bath"
-  | "study"
-  | "balcony"
-  | "corridor"
-  | "other";
-
-/** 房间朝向枚举（冻结，对应 planschema.json rooms[].orientation enum）。 */
-export type Orientation = "N" | "S" | "E" | "W" | "NE" | "NW" | "SE" | "SW";
-
-/** 房间（米制坐标，左上角原点，含辅助推断字段）。 */
-export interface PlanRoom {
-  id: string;
-  name: string;
-  type: RoomType;
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  orientation: Orientation;
-  /** 可选，缺省时由渲染/校验链按 w*h 推算（降级输出路径）。 */
-  areaM2?: number;
-  /** 可选：相邻房间 id 引用；须引用 rooms[] 中存在的 id（引用完整性）。 */
-  adjacentTo?: string[];
-}
-
-/** 墙体（米制端点坐标；thicknessMm 单位毫米、默认 200）。 */
-export interface PlanWall {
-  id: string;
-  x1: number;
-  y1: number;
-  x2: number;
-  y2: number;
-  /** 毫米，默认 200。 */
-  thicknessMm?: number;
-  hasDoor?: boolean;
-  hasWindow?: boolean;
-}
-
-/** 开口（门/窗），挂在墙体上；wallId 须引用 walls[] 中存在的 id。 */
-export interface PlanOpening {
-  kind: "door" | "window";
-  wallId: string;
-  /** 距墙起点的偏移（米），缺省取墙中点。 */
-  offsetM?: number;
-  /** 开口宽度（米）。 */
-  widthM?: number;
-}
-
-/** 平面方案中间表示（§5.2 + ADR-005）。缺省视为 schemaVersion=1（迁移注册表见 src/migrations.ts）。 */
-export interface PlanStructure {
-  /** 顶层版本号（ADR-005）；缺省视为 1。 */
-  schemaVersion?: number;
-  bounds: PlanBounds;
-  rooms: PlanRoom[];
-  walls: PlanWall[];
-  openings?: PlanOpening[];
-}
 
 /* ---------------- AgentRequest / AgentResponse（§8.3 冻结文本） ---------------- */
 
@@ -90,21 +20,15 @@ export interface PlanStructure {
  * 不放入本类型内（本类型为业务载荷）。
  */
 export type AgentRequest =
-  | { kind: "draftPlan"; sessionId: string; prompt: string; variants?: number }
-  | { kind: "editPlan"; sessionId: string; instruction: string; versionId: string }
+  /** 通用对话（R7-1：原 draftPlan/editPlan 的主路径收敛为 chat，由 main Agent 承接）。 */
+  | { kind: "chat"; sessionId: string; prompt: string }
   | { kind: "genImage"; sessionId: string; prompt: string; refImageId?: string }
   | { kind: "editImage"; sessionId: string; prompt: string; imageId: string; maskId?: string }
   /**
    * 案例调研（R5 子 agent 系统）：LLM 文本分析（research 预设挂载 web_search/fetch_page 检索工具；
    * 无检索配置时退化为模型知识分析）。
    */
-  | { kind: "research"; sessionId: string; prompt: string }
-  /**
-   * R1（2026-08-12）语义登记（R009）：listVersions 在本阶段**不返回列表**——
-   * 版本树由主进程 / UI 会话内维护（AgentResponse 冻结文本无 list 类型）；
-   * P019 后按需回归。mock 与 pi 路径对该 kind 均返回明确提示文案而非列表。
-   */
-  | { kind: "listVersions"; projectId: string };
+  | { kind: "research"; sessionId: string; prompt: string };
 
 /**
  * 图像元数据（§6.4：prompt/父版本/参考图/模型/耗时/费用）。
@@ -142,15 +66,14 @@ export interface ImageMeta {
 
 /** Agent Service → 客户端 的统一响应（冻结文本）。 */
 export type AgentResponse =
-  | { kind: "plan"; svg: string; structure: PlanStructure; versionId: string }
   | { kind: "image"; imageId: string; url: string; meta: ImageMeta }
   | { kind: "stream"; delta: string }
   | { kind: "error"; code: string; message: string };
 
 /* ---------------- SSE 事件信封（ADR-004 冻结） ---------------- */
 
-/** ADR-004：事件类型（R6-6 增补：thinking 模型思考增量 / tool 工具调用可见性；只增不改）。 */
-export type SseEventType = "delta" | "progress" | "done" | "error" | "partial" | "thinking" | "tool";
+/** ADR-004：事件类型（R6-6 增补：thinking/tool；R7-2 增补：usage 模型用量；只增不改）。 */
+export type SseEventType = "delta" | "progress" | "done" | "error" | "partial" | "thinking" | "tool" | "usage";
 
 /** delta 载荷：对话增量文本。 */
 export interface SseDeltaData {
@@ -192,6 +115,26 @@ export interface SseToolData {
 }
 
 /**
+ * usage 载荷（R7-2）：每次 LLM 调用（turn）的模型用量，API 实报值（DSH 对标口径）。
+ * - DeepSeek 映射：prompt_cache_hit_tokens→cacheReadTokens、未缓存输入（miss）→promptTokens−cacheRead−cacheWrite；
+ * - context 为静态估算（系统提示词/工具定义，启发式；对话消息 = promptTokens − 两者，渲染层推得）；
+ * - contextWindow：模型条目配置优先，留空用服务端默认（DeepSeek 官方 1M）。
+ */
+export interface SseUsageData {
+  promptTokens: number;
+  completionTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  reasoningTokens?: number;
+  totalTokens: number;
+  context: {
+    systemTokens: number;
+    toolTokens: number;
+    contextWindow: number;
+  };
+}
+
+/**
  * ADR-004 事件信封：每个事件含 { requestId, sessionId, type, data }。
  * 渲染进程增量渲染，主进程逐帧转发不缓冲整条流。
  */
@@ -211,6 +154,7 @@ export interface SseEventDataByType extends Record<SseEventType, unknown> {
   partial: SsePartialData;
   thinking: SseThinkingData;
   tool: SseToolData;
+  usage: SseUsageData;
 }
 
 /** 便捷构造函数：生成一个完整信封（网关/测试共用，避免手拼错误）。 */

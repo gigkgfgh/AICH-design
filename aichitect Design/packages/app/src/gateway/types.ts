@@ -7,9 +7,9 @@
  * mock 直连模式下默认使用 MockGatewayClient；
  * // TODO-API: 切换 backend 网关 —— 在 electron 壳内（agent-service ready）自动切 IpcGatewayClient。
  */
-import type { AgentRequest, AgentResponse, GatewayStatus, RunOptions, SseDeltaData, SseEventEnvelope, SseEventType, SseThinkingData, SseToolData } from '../types/contracts';
+import type { AgentRequest, AgentResponse, GatewayStatus, RunOptions, SseDeltaData, SseEventEnvelope, SseEventType, SseThinkingData, SseToolData, SseUsageData } from '../types/contracts';
 
-/** SSE 事件处理器（信封语义见 contracts.ts：delta|progress|done|error|partial） */
+/** SSE 事件处理器（信封语义见 contracts.ts：delta|progress|done|error|partial|usage） */
 export interface StreamHandlers {
   onDelta?: (delta: string) => void;
   onProgress?: (progress: unknown) => void;
@@ -20,6 +20,8 @@ export interface StreamHandlers {
   onThinking?: (delta: string) => void;
   /** R6-6：工具调用可见性 */
   onTool?: (info: { toolName: string; phase: 'start' | 'end'; error?: string }) => void;
+  /** R7-2：模型用量（每次 LLM 调用一轮；API 实报值 + 上下文构成估算） */
+  onUsage?: (usage: SseUsageData) => void;
 }
 
 export interface GatewayClient {
@@ -56,6 +58,9 @@ switch (envelope.type satisfies SseEventType) {
       break;
     case 'tool':
       handlers.onTool?.(envelope.data as SseToolData);
+      break;
+    case 'usage':
+      handlers.onUsage?.(envelope.data as SseUsageData);
       break;
     default:
       break;

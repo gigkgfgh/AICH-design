@@ -5,8 +5,8 @@
  * stopReason 为 "stop"（文本结束）或 "toolUse"（工具调用，Agent Loop 继续执行）。
  *
  * 闭环策略（两轮）：
- * - 第一轮（context 中无 toolResult）：draftPlan → 注入 render_plan_svg 工具调用
- *   （variants 可多方案）；editPlan → 注入 plan_patch 工具调用；其他 → 纯文本；
+ * - 第一轮（context 中无 toolResult）：genImage → 注入 image_generate；editImage → 注入
+ *   image_edit；其他（chat/research）→ 纯文本；
  * - 第二轮（loop 执行工具后带 toolResult 再来）：输出总结文本（stop）。
  * 依赖 @earendil-works/pi-ai 0.84.1（锁定）；本文件仅供真实内核路径使用，
  * 依赖不可安装时由 MockAdapter（零 pi 依赖）顶替。
@@ -25,7 +25,6 @@ import type { AgentRequest } from "@aichdesign/shared";
 import {
   buildMockReply,
   buildMockSummaryText,
-  isEditIntent,
   type MockToolCall,
 } from "./replies.js";
 
@@ -129,7 +128,7 @@ export function createMockChatStream(
     const request: AgentRequest =
       requestHint ??
       ({
-        kind: isEditIntent(prompt) ? "editPlan" : "draftPlan",
+        kind: "chat",
         sessionId: "",
         prompt,
       } as AgentRequest);

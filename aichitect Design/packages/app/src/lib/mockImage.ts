@@ -2,8 +2,8 @@
  * P013 mock 图像生成（确定性、离线可用）
  *
  * 用途：P012 image-tools 契约未就绪前的本地 mock 先行路径（TODO-API-STUB），
- * 以 canvas 绘制「带 prompt 文本的渐变/参考图叠加」dataURL，供 ImageGallery /
- * 图像版本树演示「方案 → 表现图 → 回退」闭环。
+ * 以 canvas 绘制「带 prompt 文本的渐变/参考图叠加」dataURL，供图像画布演示
+ * 无网端到端闭环。
  *
  * 设计要点：
  * - 确定性：同 prompt → 同种子 → 同配色/装饰布局（可测试、可复现）
@@ -12,8 +12,37 @@
  *   再叠加半透明渐变与 prompt 文本 —— 模拟「平面 → 表现图」联动
  * - P012 契约就绪后切换：App 走网关 SSE done.image（见 App.tsx runImageRequest），本模块仅 mock 期使用
  */
-import type { CanvasContextLike, CanvasLike, ImageLike } from './svgToPng';
-import { loadImageLike } from './svgToPng';
+/** canvas 最小结构（与真实 HTMLCanvasElement 结构兼容；测试传 mock）。 */
+export interface CanvasContextLike {
+  drawImage(image: CanvasImageSource, dx: number, dy: number, dw?: number, dh?: number): void;
+  fillRect(x: number, y: number, w: number, h: number): void;
+  fillStyle: string | CanvasGradient;
+}
+
+export interface CanvasLike {
+  width: number;
+  height: number;
+  getContext(contextId: '2d'): CanvasContextLike | null;
+  toDataURL(type?: string): string;
+}
+
+export interface ImageLike {
+  src: string;
+  onload: (() => void) | null;
+  onerror: (() => void) | null;
+  naturalWidth?: number;
+  naturalHeight?: number;
+}
+
+/** dataURL → ImageLike 加载（onload/onerror 一次性行为；入参为图片工厂）。 */
+function loadImageLike(factory: () => ImageLike, src: string): Promise<ImageLike> {
+  return new Promise((resolve, reject) => {
+    const image = factory();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error('参考图加载失败'));
+    image.src = src;
+  });
+}
 
 export interface MockImageOptions {
   /** 输出宽（px），默认 1024（gpt-image-2 默认 size） */

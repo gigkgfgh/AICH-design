@@ -34,6 +34,22 @@ function fetchFallback(uri: string): Promise<string | null> {
   return p;
 }
 
+/** 批量解析图像地址为可显示 src（file:// → 缓存/IPC 兜底 dataURL；其余原样）。 */
+export async function resolveImageSrcs(urls: string[]): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  await Promise.all(
+    urls.map(async (url) => {
+      if (!url.startsWith('file://')) {
+        out.set(url, url);
+        return;
+      }
+      const resolved = await fetchFallback(url);
+      if (resolved) out.set(url, resolved);
+    }),
+  );
+  return out;
+}
+
 export interface SafeImageProps {
   src: string;
   alt: string;

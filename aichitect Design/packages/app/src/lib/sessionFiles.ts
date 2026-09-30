@@ -3,12 +3,12 @@
  *
  * 数据源与 agent-service JsonlSessionStore 同构：每行 { ts, kind, requestId?, data }。
  * - user 行 data: { text, kind }
- * - assistant 行 data: { kind: 'plan'|'image'|'stream', versionId?, text?, imageId?, url? }
+ * - assistant 行 data: { kind: 'image'|'stream', text?, imageId?, url? }（R7-1：plan 条目为遗留数据，解析时忽略）
  * - image 行 data: { imageId, url, meta }（ImageRegistry 落盘回执）
  * 本层不接触 fs（可单测）；损坏行容错跳过（与 JsonlSessionStore.readLines 同策略）。
  */
 
-import type { ImageMeta, ImageVersion, RestoredMessage, SessionContent, SessionSummary } from '../types/contracts.js';
+import type { ImageMeta, ImageVersion, RestoredMessage, RestoredUsage, SessionContent, SessionSummary } from '../types/contracts.js';
 
 /** jsonl 原始行形状（宽松解析后判别） */
 interface RawEntry {
@@ -74,43 +74,62 @@ export function parseSessionContent(sessionId: string, content: string): Session
   const entries = content.split('\n').map(parseEntryLine).filter((e): e is RawEntry => e !== null);
   const messages: RestoredMessage[] = [];
   const images: ImageVersion[] = [];
-  const versionRefs: SessionContent['versionRefs'] = [];
+  // R7-2：imageId → file:// url 索引（image 条目落盘回执），用于恢复用户消息的图片附件
+  const imageUrlById = new Map<string, string>();
+  // R7-2：usage 行聚合（重启后用量胶囊恢复的数据源）；last* 取最后一行，session* 全程累计
+  const usageAcc: RestoredUsage = {
+    lastPromptTokens: 0,
+    lastCompletionTokens: 0,
+    lastCacheReadTokens: 0,
+    contextWindow: 0,
+    contextSystemTokens: 0,
+    contextToolTokens: 0,
+    sessionInput: 0,
+    sessionCacheRead: 0,
+    sessionCacheWrite: 0,
+    sessionOutput: 0,
+    sessionTotal: 0,
+    sessionReasoning: 0,
+  };
+  let hasUsage = false;
 
   let seq = 0;
   for (const e of entries) {
     const data = asRecord(e.data);
     if (e.kind === 'user' && data) {
       const text = str(data['text']);
-      if (text) {
+      const imageIds = Array.isArray(data['imageIds'])
+        ? (data['imageIds'] as unknown[]).filter((x): x is string => typeof x === 'string')
+        : [];
+      const restoredImages = imageIds
+        .map((id) => imageUrlById.get(id))
+        .filter((u): u is string => typeof u === 'string');
+      if (text || restoredImages.length > 0) {
         seq += 1;
-        messages.push({ id: `restore-${sessionId}-${seq}`, role: 'user', text });
+        messages.push({
+          id: `restore-${sessionId}-${seq}`,
+          role: 'user',
+          text: text ?? '',
+          ...(restoredImages.length > 0 ? { images: restoredImages } : {}),
+        });
       }
     } else if (e.kind === 'assistant' && data) {
       const kind = str(data['kind']);
-      const ts = str(e.ts) ?? new Date(0).toISOString();
       let text = str(data['text']);
-      const versionId = str(data['versionId']);
       const imageId = str(data['imageId']);
-      if (!text) {
-        if (kind === 'plan' && versionId) text = `已生成方案版本 ${versionId}。`;
-        else if (kind === 'image' && imageId) text = `已生成表现图 ${imageId}。`;
-        else text = undefined;
-      }
-      if (kind === 'plan' && versionId) {
-        versionRefs.push({ versionId, createdAt: ts });
-      }
+      if (!text && kind === 'image' && imageId) text = `已生成表现图 ${imageId}。`;
       if (text) {
         seq += 1;
         messages.push({
           id: `restore-${sessionId}-${seq}`,
           role: 'assistant',
           text,
-          planVersionId: kind === 'plan' ? versionId : undefined,
         });
       }
     } else if (e.kind === 'image' && data) {
       const imageId = str(data['imageId']);
       const url = str(data['url']);
+      if (imageId && url) imageUrlById.set(imageId, url);
       const meta = asRecord(data['meta']) as ImageMeta | null;
       if (imageId && url && meta) {
         const ts = str(e.ts) ?? meta.createdAt ?? new Date(0).toISOString();
@@ -118,15 +137,39 @@ export function parseSessionContent(sessionId: string, content: string): Session
           imageId,
           url,
           meta,
-          parentPlanVersionId: str(meta.parentVersionId) ?? null,
           createdAt: meta.createdAt ?? ts,
         });
       }
+    } else if (e.kind === 'usage' && data) {
+      // R7-2：usage 行（UsageRecord 形状；promptTokens 为未缓存输入口径）→ 用量聚合回填
+      const num = (key: string): number => (typeof data[key] === 'number' ? (data[key] as number) : 0);
+      const miss = num('promptTokens');
+      const completion = num('completionTokens');
+      const cacheRead = num('cacheReadTokens');
+      const cacheWrite = num('cacheWriteTokens');
+      usageAcc.sessionInput += miss;
+      usageAcc.sessionCacheRead += cacheRead;
+      usageAcc.sessionCacheWrite += cacheWrite;
+      usageAcc.sessionOutput += completion;
+      usageAcc.sessionTotal += num('totalTokens');
+      // last* 对齐 SSE 口径：prompt = 未缓存输入 + 缓存读取 + 缓存写入
+      usageAcc.lastPromptTokens = miss + cacheRead + cacheWrite;
+      usageAcc.lastCompletionTokens = completion;
+      usageAcc.lastCacheReadTokens = cacheRead;
+      const context = asRecord(data['context']);
+      if (context) {
+        usageAcc.contextWindow = typeof context['contextWindow'] === 'number' ? (context['contextWindow'] as number) : 0;
+        usageAcc.contextSystemTokens =
+          typeof context['systemTokens'] === 'number' ? (context['systemTokens'] as number) : 0;
+        usageAcc.contextToolTokens =
+          typeof context['toolTokens'] === 'number' ? (context['toolTokens'] as number) : 0;
+      }
+      hasUsage = true;
     }
-    // usage/error/tool/run/event 行不进恢复视图（审计数据，非对话内容）
+    // error/tool/run/event 行不进恢复视图（审计数据，非对话内容）
   }
 
-  return { sessionId, title: titleFrom(entries), messages, images, versionRefs };
+  return { sessionId, title: titleFrom(entries), messages, images, ...(hasUsage ? { usage: usageAcc } : {}) };
 }
 
 /** sessionId 白名单（与后端 SESSION_ID_RE 同源；主进程读文件前的防御校验）。 */

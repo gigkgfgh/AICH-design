@@ -467,20 +467,18 @@ function validateRunRequest(
 
 function isKnownKind(request: AgentRequest): boolean {
   return (
-    request.kind === "draftPlan" ||
-    request.kind === "editPlan" ||
+    request.kind === "chat" ||
     request.kind === "genImage" ||
     request.kind === "editImage" ||
-    request.kind === "research" ||
-    request.kind === "listVersions"
+    request.kind === "research"
   );
 }
 
 /** R5：信封扩展字段解析（合法返回值/缺省 undefined；非法返回 false 供 400）。 */
-const SUB_AGENTS = new Set(["main", "plan-draft", "image-gen", "research"]);
+const SUB_AGENTS = new Set(["main", "image-gen", "research"]);
 const THINKING_LEVELS = new Set(["off", "low", "medium", "high", "xhigh", "max"]);
 
-function parseSubAgent(v: unknown): "main" | "plan-draft" | "image-gen" | "research" | undefined | false {
+function parseSubAgent(v: unknown): "main" | "image-gen" | "research" | undefined | false {
   if (v === undefined || v === null || v === "") return undefined;
   return typeof v === "string" && SUB_AGENTS.has(v) ? (v as "main") : false;
 }

@@ -25,6 +25,10 @@ interface ModelDraft {
   /** undefined = 未触碰（保留原 Key）；'' = 显式清除。 */
   apiKey?: string;
   thinking: string;
+  /** R7-1：图像输入开关（默认开启；纯文本端点关闭）。 */
+  imageInput: boolean;
+  /** R7-2：最大上下文窗口（表单字符串；'' = 留空使用服务端默认）。 */
+  contextWindow: string;
   hasKey?: boolean;
 }
 
@@ -46,7 +50,7 @@ export function LlmEndpointsPane({ secrets, noBridge, onSaved }: LlmEndpointsPan
   useEffect(() => {
     if (!secrets) return;
     setModels(
-      secrets.models.map((m) => ({ id: m.id, name: m.name, baseUrl: m.baseUrl, model: m.model, thinking: m.thinking, hasKey: m.hasKey })),
+      secrets.models.map((m) => ({ id: m.id, name: m.name, baseUrl: m.baseUrl, model: m.model, thinking: m.thinking, imageInput: m.imageInput, contextWindow: m.contextWindow > 0 ? String(m.contextWindow) : '', hasKey: m.hasKey })),
     );
     setActiveModelId(secrets.activeModelId);
   }, [secrets]);
@@ -73,10 +77,19 @@ export function LlmEndpointsPane({ secrets, noBridge, onSaved }: LlmEndpointsPan
     setNotice(null);
     try {
       const st = await window.aichBridge.saveModels(
-        models.map((m) => ({ id: m.id, name: m.name, baseUrl: m.baseUrl.trim(), model: m.model.trim(), apiKey: m.apiKey, thinking: m.thinking })),
+        models.map((m) => ({
+          id: m.id,
+          name: m.name,
+          baseUrl: m.baseUrl.trim(),
+          model: m.model.trim(),
+          apiKey: m.apiKey,
+          thinking: m.thinking,
+          imageInput: m.imageInput,
+          contextWindow: Math.min(10_000_000, Math.max(0, Math.floor(Number(m.contextWindow) || 0))) || undefined,
+        })),
         activeModelId,
       );
-      setModels(st.models.map((m) => ({ id: m.id, name: m.name, baseUrl: m.baseUrl, model: m.model, thinking: m.thinking, hasKey: m.hasKey })));
+      setModels(st.models.map((m) => ({ id: m.id, name: m.name, baseUrl: m.baseUrl, model: m.model, thinking: m.thinking, imageInput: m.imageInput, contextWindow: m.contextWindow > 0 ? String(m.contextWindow) : '', hasKey: m.hasKey })));
       setActiveModelId(st.activeModelId);
       onSaved(st);
       setNotice({ kind: 'ok', text: `已保存 ${st.models.length} 个模型条目，本地服务重启生效中…` });
@@ -151,6 +164,32 @@ export function LlmEndpointsPane({ secrets, noBridge, onSaved }: LlmEndpointsPan
               ))}
             </select>
           </div>
+          <details className="settings__advanced">
+            <summary className="settings__advanced-summary">高级设置</summary>
+            <div className="settings__advanced-body">
+              <label className="settings__advanced-row" title="本条目模型的最大上下文窗口（tokens）。留空使用服务端默认（DeepSeek 官方为 1M）；用于用量面板的上下文占比显示">
+                <span className="settings__advanced-label">上下文窗口</span>
+                <input
+                  className="settings__input settings__input--grow"
+                  type="number"
+                  min={0}
+                  step={1000}
+                  placeholder="留空使用默认"
+                  value={m.contextWindow}
+                  onChange={(e) => patch(i, { contextWindow: e.target.value })}
+                  aria-label="最大上下文窗口（tokens）"
+                />
+              </label>
+              <label className="settings__advanced-row" title="端点支持图像输入时，上传/生成的图片将以视觉内容交给模型；纯文本端点请关闭（否则上游会报错）">
+                <span className="settings__advanced-label">图像输入</span>
+                <input
+                  type="checkbox"
+                  checked={m.imageInput}
+                  onChange={(e) => patch(i, { imageInput: e.target.checked })}
+                />
+              </label>
+            </div>
+          </details>
           <input
             className="settings__input"
             type="password"
@@ -166,7 +205,7 @@ export function LlmEndpointsPane({ secrets, noBridge, onSaved }: LlmEndpointsPan
         type="button"
         className="settings__btn settings__btn--ghost settings__btn--sm"
         disabled={busy}
-        onClick={() => setModels((prev) => [...prev, { name: '', baseUrl: '', model: '', thinking: 'off' }])}
+        onClick={() => setModels((prev) => [...prev, { name: '', baseUrl: '', model: '', thinking: 'off', imageInput: true, contextWindow: '' }])}
       >
         ＋ 添加模型
       </button>

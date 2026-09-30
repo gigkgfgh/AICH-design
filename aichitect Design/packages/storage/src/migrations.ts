@@ -6,8 +6,7 @@
  * - 仅前向、幂等：user_version 已达 STORAGE_SCHEMA_VERSION 则跳过全部步骤；
  * - 连续性 fail-closed：缺步（注册表不连续）、库版本超前、迁移执行失败均抛错，
  *   绝不静默建表或降级（打开失败由调用方上报）；
- * - PlanStructure JSON 内部版本演进归 @aichdesign/shared/migrations（读取侧前向迁移，
- *   见 repositories.PlanVersionRepository）。
+ * - R7-1：plan_version 表仅由本历史迁移创建（遗留数据；写入侧仓储已随方案链路移除）。
  */
 
 import type { DatabaseSync } from "node:sqlite";

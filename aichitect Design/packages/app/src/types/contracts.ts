@@ -1,12 +1,13 @@
 /**
  * 跨层统一消息契约 —— 本地入口（R012：存根对齐 shared）
  *
- * 类型唯一权威：`@aichdesign/shared`（backend 冻结落盘，含 PlanStructure/AgentRequest/
+ * 类型唯一权威：`@aichdesign/shared`（backend 冻结落盘，含 AgentRequest/
  * AgentResponse/SSE 信封（SseEventEnvelope/SseDeltaData/SseProgressData/SseErrorData/
  * SsePartialData）/ImageMeta/错误码 ErrorCode），本文件一律 re-export，禁止本地重复定义。
  *
  * 本文件仅保留**前端视图模型扩展**（非契约，mock 层与 UI 共用）：
- * ChatMessage / PlanVersion / AgentServiceStatus / GatewayStatus。
+ * ChatMessage / ImageVersion / AgentServiceStatus / GatewayStatus。
+ * R7-1：方案/版本树相关视图模型随方案链路移除。
  * 若 shared 契约变更，本文件无需改动（消费方直接获得新类型）。
  */
 export * from '@aichdesign/shared';
@@ -14,32 +15,15 @@ import type { SubAgentId, ThinkingLevel } from '@aichdesign/shared';
 
 /* ---------------- 前端视图模型（非契约，mock 层与 UI 共用） ---------------- */
 
-import type { ImageMeta, PlanStructure } from '@aichdesign/shared';
+import type { ImageMeta } from '@aichdesign/shared';
 
-/** 方案版本节点（对应 §9.2 plan_versions 视图；mock 阶段为内存数据） */
-export interface PlanVersion {
-  versionId: string;
-  parentVersionId: string | null;
-  createdAt: string;
-  /** 生成该版本的 prompt / 修改指令 */
-  instruction?: string;
-  plan: PlanStructure;
-  svg: string;
-}
-
-/**
- * 图像版本节点（B-4 图像版本树视图模型；P013）
- * - meta 字段契约权威在 shared.ImageMeta（本处仅透传 + 展示）
- * - parentPlanVersionId：B-3 平面 → 表现图联动，生成该图时的当前 plan 版本（回退目标）
- */
+/** 图像版本节点（P013 视图模型；meta 契约权威在 shared.ImageMeta）。 */
 export interface ImageVersion {
   imageId: string;
   /** 图像地址：mock 阶段为 dataURL；P012 落盘后可为 file:// 或 http url */
   url: string;
   /** 图像元数据（prompt/model/provider/费用/耗时 等） */
   meta: ImageMeta;
-  /** 父 plan 版本 id（B-3；回退到该 plan 版本时使用） */
-  parentPlanVersionId: string | null;
   /** 本地创建时间兜底（meta.createdAt 优先） */
   createdAt: string;
 }
@@ -49,8 +33,6 @@ export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant' | 'system';
   text: string;
-  /** 关联的方案版本（assistant 消息携带 PlanResponse 时） */
-  planVersionId?: string;
   /** 错误消息标记（用于错误态视觉） */
   isError?: boolean;
   /** R6-6：模型思考内容（thinking 事件累积；展示受设置开关控制） */
@@ -102,8 +84,8 @@ export interface RestoredMessage {
   id: string;
   role: 'user' | 'assistant';
   text: string;
-  /** 关联方案版本（assistant plan 消息） */
-  planVersionId?: string;
+  /** R7-2：用户消息携带的图片（file:// url，来自 jsonl user.imageIds × image 条目回填） */
+  images?: string[];
 }
 
 /** 恢复的会话内容（sessions:read 返回） */
@@ -113,8 +95,27 @@ export interface SessionContent {
   messages: RestoredMessage[];
   /** 图像条目（file:// url，显示经 readImageAsDataUrl 兜底） */
   images: ImageVersion[];
-  /** 方案版本引用（jsonl 仅存 versionId；结构/SVG 完整恢复待 meta.db 接线） */
-  versionRefs: Array<{ versionId: string; createdAt: string }>;
+  /**
+   * R7-2：会话用量聚合（jsonl usage 行回填；与 useConversation.SessionUsage 同构）。
+   * 旧会话/无 usage 行时缺省；context 段为落盘时的静态估算快照（旧数据无此段 → 0，UI 显示 —）。
+   */
+  usage?: RestoredUsage;
+}
+
+/** 会话用量聚合的恢复形状（jsonl usage 行累计；last* 取最后一行，session* 为全程累计） */
+export interface RestoredUsage {
+  lastPromptTokens: number;
+  lastCompletionTokens: number;
+  lastCacheReadTokens: number;
+  contextWindow: number;
+  contextSystemTokens: number;
+  contextToolTokens: number;
+  sessionInput: number;
+  sessionCacheRead: number;
+  sessionCacheWrite: number;
+  sessionOutput: number;
+  sessionTotal: number;
+  sessionReasoning: number;
 }
 
 /* ---------------- 运行选项（R5：子 agent / 模型覆盖 / 思考深度，随信封透传） ---------------- */
@@ -147,15 +148,6 @@ export interface UploadedImage {
   url: string;
 }
 
-/** 历史方案记录（storage:plans IPC 返回；结构+SVG 完整恢复，meta.db 可用时）。 */
-export interface StoragePlanRecord {
-  versionId: string;
-  parentVersionId: string | null;
-  structure: PlanStructure;
-  svg: string | null;
-  createdAt: string;
-}
-
 /* ---------------- 密钥管理（设置面板自配 LLM/图像 Key；safeStorage 无口令方案） ---------------- */
 
 /** 模型条目（密钥管理页；apiKey 只回 hasKey 布尔）。 */
@@ -165,6 +157,10 @@ export interface ModelEntry {
   baseUrl: string;
   model: string;
   thinking: string;
+  /** R7-1：端点支持图像输入（默认 true；纯文本端点关闭）。 */
+  imageInput: boolean;
+  /** R7-2：最大上下文窗口（tokens；0/缺省 = 服务端默认）。 */
+  contextWindow: number;
   hasKey: boolean;
 }
 
@@ -234,4 +230,8 @@ export interface ModelEntryInput {
   model: string;
   apiKey?: string;
   thinking?: string;
+  /** R7-1：图像输入开关（缺省 true）。 */
+  imageInput?: boolean;
+  /** R7-2：最大上下文窗口（tokens；留空 = 服务端默认）。 */
+  contextWindow?: number;
 }

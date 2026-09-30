@@ -26,6 +26,10 @@ export interface LlmEndpointConfig {
   baseURL: string;
   apiKeyRef: string;
   model: string;
+  /** R7-1：端点是否支持图像输入（缺省 true——DeepSeek 官方等视觉端点开箱即用；纯文本端点显式关）。 */
+  imageInput?: boolean;
+  /** R7-2：最大上下文窗口（tokens；<=0/缺省 = 服务端默认：DeepSeek 官方 1M，其余 128K 保守值）。 */
+  contextWindow?: number;
 }
 
 export const LLM_PROVIDER_ID = "aich-llm";
@@ -65,9 +69,16 @@ export function buildLlmModel(
     baseUrl: config.baseURL.replace(/\/+$/, ""),
     // R6-17：仅 DeepSeek 开启思考（pi-ai deepseek 分支以 reasoning 为前提）。
     reasoning: deepseek,
-    input: ["text"],
+    // R7-1：默认声明图像输入——pi-ai transform-messages 据此决定是否把 image 块降级为
+    // "(image omitted)" 占位文本（input 不含 "image" 时图片在 SDK 层即被剥除）。
+    input: config.imageInput === false ? ["text"] : ["text", "image"],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: 128_000,
+    // R7-2：条目配置优先；默认按端点取值（DeepSeek 官方文档 CONTEXT LENGTH 1M；其余保守 128K）。
+    contextWindow: config.contextWindow && config.contextWindow > 0
+      ? Math.floor(config.contextWindow)
+      : deepseek
+        ? 1_000_000
+        : 128_000,
     maxTokens: 8_192,
     ...(deepseek
       ? {

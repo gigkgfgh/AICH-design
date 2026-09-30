@@ -1,10 +1,10 @@
 /**
- * useConversation —— 单会话编排（从 App.tsx 抽出，P-R3 重构）。
+ * useConversation —— 单会话编排（从 App.tsx 抽出，P-R3 重构；R7-1 方案链路移除）。
  *
- * - 消息修改流：「一句话 → 方案 SVG → 改一句 → 新版本 → 回退」闭环
- * - 图像流（P013）：方案 → 表现图（genImage）/ 编辑（editImage），mock 先行
+ * - 对话流：chat（main Agent 承接）/ research（调研子 agent）/ image-gen（图像子 agent）
+ * - 图像流（P013）：genImage（文生图）/ editImage（参考图编辑），mock 先行 + 网关 SSE
  * - sessionId 参数化：请求携带真实会话 id（P016 会话 token 由主进程按 sessionId 注入）
- * - restore()：从主进程 sessions:read 恢复历史会话（消息/图像；方案结构完整恢复待 meta.db）
+ * - restore()：从主进程 sessions:read 恢复历史会话（消息/图像）
  * - 会话切换时 reset() 清空本地状态
  */
 
@@ -16,25 +16,22 @@ import type {
   ChatMessage,
   ImageMeta,
   ImageVersion,
-  PlanStructure,
-  PlanVersion,
   SessionContent,
-  StoragePlanRecord,
+  SseUsageData,
   SubAgentId,
   ThinkingLevel,
 } from '../types/contracts';
 import type { GatewayClient } from '../gateway/types';
 import { mockGateway } from '../gateway/mockGateway';
-import { svgToPngDataUrl } from '../lib/svgToPng';
 import { generateMockImageDataUrl } from '../lib/mockImage';
 
-/** R5：主 Agent 意图路由（显式选定子 agent 时不再路由）——导出供单测。 */
+/** R5：主 Agent 意图路由（显式选定子 agent 时不再路由）——导出供单测。R7-1：默认 main。 */
 export function classifyAgentIntent(text: string): SubAgentId {
   if (/(表现图|效果图|渲染|图像|配图)|((生成|换|改成?|变).{0,8}图)|(图.{0,6}(生成|换|改))/.test(text)) {
     return 'image-gen';
   }
   if (/(调研|案例|参考资?料?|搜索|检索|查一?下|规范|造价|材料|行情)/.test(text)) return 'research';
-  return 'plan-draft';
+  return 'main';
 }
 
 /** R5：文本附件注入 prompt（≤50KB 已在上传侧限制）。 */
@@ -74,10 +71,23 @@ function nextImageId(): string {
   return `img-${Date.now().toString(36)}-${imgSeq}`;
 }
 
-/** 生成表现图默认提示词（基于当前 plan 摘要） */
-function buildImagePrompt(plan: PlanStructure): string {
-  const names = plan.rooms.map((r) => r.name).join('、');
-  return `为当前平面方案生成室内表现图（${plan.rooms.length} 个房间：${names}，${plan.bounds.widthM}×${plan.bounds.heightM}m），现代简约风格，自然采光，细节精致。`;
+/** R7-2：模型用量聚合（最近一轮 = 上下文规模口径；会话累计由逐轮 usage 累加）。 */
+export interface SessionUsage {
+  /** 最近一轮 prompt（含缓存命中，DeepSeek prompt_tokens 口径） */
+  lastPromptTokens: number;
+  lastCompletionTokens: number;
+  lastCacheReadTokens: number;
+  /** 上下文窗口与静态构成（条目配置优先，服务端默认兜底） */
+  contextWindow: number;
+  contextSystemTokens: number;
+  contextToolTokens: number;
+  /** 会话累计（DSH 口径：未缓存输入/缓存读取/输出/总计/思考） */
+  sessionInput: number;
+  sessionCacheRead: number;
+  sessionCacheWrite: number;
+  sessionOutput: number;
+  sessionTotal: number;
+  sessionReasoning: number;
 }
 
 export interface UseConversationOptions {
@@ -87,32 +97,34 @@ export interface UseConversationOptions {
 
 export interface UseConversationResult {
   messages: ChatMessage[];
-  versions: PlanVersion[];
   images: ImageVersion[];
-  currentVersion: PlanVersion | null;
-  currentVersionId: string | null;
   currentImage: ImageVersion | null;
   streaming: boolean;
   imageLoading: boolean;
   imageError: string | null;
-  selectedRoomId: string | null;
   /** 会话是否有内容（AppShell idle/working 状态机依据） */
   hasContent: boolean;
+  /** R7-2：模型用量聚合（无 usage 数据为 null） */
+  usage: SessionUsage | null;
   sendMessage: (text: string, options?: SendMessageOptions) => void;
   /** R6-19：主动打断/终止当前在途请求（保留已生成部分，中性"已停止"终态） */
   stop: () => void;
   /** R6-15：重试失败消息（上游错误重发，3 次上限；原位重跑同一请求） */
   retry: (messageId: string) => void;
-  selectVersion: (version: PlanVersion) => void;
   selectImage: (image: ImageVersion) => void;
-  selectRoom: (roomId: string | null) => void;
+  /** 生成表现图（R7-1：与平面方案解耦，直接按提示词走 genImage） */
   generateImage: () => void;
   editImage: (image: ImageVersion) => void;
-  rollbackToPlanFromImage: (image: ImageVersion) => void;
+  /** R7-2：把已注册图像（上传/编辑产物）加入画布 */
+  addRegisteredImage: (imageId: string, url: string, meta?: Partial<ImageMeta>) => void;
+  /** R7-2：从画布移除图像（仅视图层；磁盘文件与 jsonl 存档不动） */
+  removeImage: (imageId: string) => void;
+  /** R7-2：复制图像为画布新条目（新 imageId、同 url，meta 标注血缘） */
+  duplicateImage: (imageId: string) => void;
   /** 会话切换：清空本地状态（切回历史时再 restore） */
   reset: () => void;
-  /** 恢复历史会话内容（主进程 sessions:read 产物；plans = meta.db 完整方案，可选） */
-  restore: (content: SessionContent, plans?: StoragePlanRecord[]) => void;
+  /** 恢复历史会话内容（主进程 sessions:read 产物） */
+  restore: (content: SessionContent) => void;
   /**
    * R6：在途请求重连挂接（刷新/切回后）。主进程 activeRuns → 逐个 subscribe：
    * - 终态缓存回放：done 已发生 → onDone 立即触发（结果入树，永不丢）
@@ -127,33 +139,43 @@ export function useConversation(
   options: UseConversationOptions = {},
 ): UseConversationResult {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [versions, setVersions] = useState<PlanVersion[]>([]);
-  const [currentVersionId, setCurrentVersionId] = useState<string | null>(null);
-  const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
   const [streaming, setStreaming] = useState(false);
   const [images, setImages] = useState<ImageVersion[]>([]);
   const [currentImageId, setCurrentImageId] = useState<string | null>(null);
   const [imageLoading, setImageLoading] = useState(false);
   const [imageError, setImageError] = useState<string | null>(null);
+  const [usage, setUsage] = useState<SessionUsage | null>(null);
 
   const unsubRef = useRef<(() => void) | null>(null);
   // R6-19：在途请求（最新一条）——主动停止依据；userCancelled 记录用户主动打断的消息（中性终态，不进重试链）。
   const activeRunRef = useRef<{ requestId: string; assistantId: string } | null>(null);
   const userCancelledRef = useRef<Set<string>>(new Set());
-  // 当前版本/图像快照（构建请求时读取，避免闭包过期）
-  const currentVersionRef = useRef<PlanVersion | null>(null);
+  // 当前图像快照（构建请求时读取，避免闭包过期）
   const currentImageRef = useRef<ImageVersion | null>(null);
 
-  const currentVersion = useMemo(
-    () => versions.find((v) => v.versionId === currentVersionId) ?? null,
-    [versions, currentVersionId],
-  );
-  currentVersionRef.current = currentVersion;
   const currentImage = useMemo(
     () => images.find((img) => img.imageId === currentImageId) ?? null,
     [images, currentImageId],
   );
   currentImageRef.current = images.length > 0 ? (currentImage ?? images[images.length - 1] ?? null) : null;
+
+  /** R7-2：逐轮 usage 累加（onUsage） */
+  const accumulateUsage = useCallback((u: SseUsageData): void => {
+    setUsage((prev) => ({
+      lastPromptTokens: u.promptTokens,
+      lastCompletionTokens: u.completionTokens,
+      lastCacheReadTokens: u.cacheReadTokens,
+      contextWindow: u.context.contextWindow,
+      contextSystemTokens: u.context.systemTokens,
+      contextToolTokens: u.context.toolTokens,
+      sessionInput: (prev?.sessionInput ?? 0) + (u.promptTokens - u.cacheReadTokens - u.cacheWriteTokens),
+      sessionCacheRead: (prev?.sessionCacheRead ?? 0) + u.cacheReadTokens,
+      sessionCacheWrite: (prev?.sessionCacheWrite ?? 0) + u.cacheWriteTokens,
+      sessionOutput: (prev?.sessionOutput ?? 0) + u.completionTokens,
+      sessionTotal: (prev?.sessionTotal ?? 0) + u.totalTokens,
+      sessionReasoning: (prev?.sessionReasoning ?? 0) + (u.reasoningTokens ?? 0),
+    }));
+  }, []);
 
   const finishStream = useCallback(() => {
     unsubRef.current?.();
@@ -164,58 +186,48 @@ export function useConversation(
   }, [options]);
 
   /** 图像响应入树（mock 与网关 done.image 共用） */
-  const addImageResponse = useCallback(
-    (response: Extract<AgentResponse, { kind: 'image' }>, parentPlanVersionId: string | null) => {
-      const version: ImageVersion = {
-        imageId: response.imageId,
-        url: response.url,
-        meta: response.meta,
-        parentPlanVersionId,
-        createdAt: response.meta.createdAt ?? new Date().toISOString(),
-      };
-      setImages((prev) => [...prev, version]);
-      setCurrentImageId(response.imageId);
-      setImageLoading(false);
-      setImageError(null);
-    },
-    [],
-  );
+  const addImageResponse = useCallback((response: Extract<AgentResponse, { kind: 'image' }>) => {
+    const version: ImageVersion = {
+      imageId: response.imageId,
+      url: response.url,
+      meta: response.meta,
+      createdAt: response.meta.createdAt ?? new Date().toISOString(),
+    };
+    setImages((prev) => [...prev, version]);
+    setCurrentImageId(response.imageId);
+    setImageLoading(false);
+    setImageError(null);
+  }, []);
 
   /** 发起图像请求（genImage / editImage；mock 本地生成 / 网关 SSE 双路径） */
   const runImageRequest = useCallback(
     async (kind: 'genImage' | 'editImage', prompt: string) => {
       if (imageLoading) return;
-      const curVersion = currentVersionRef.current;
       const curImage = currentImageRef.current;
       setImageLoading(true);
       setImageError(null);
 
       let request: AgentRequest;
-      if (kind === 'genImage') {
-        if (!curVersion) {
-          setImageError('请先生成平面方案，再生成表现图');
-          setImageLoading(false);
-          return;
-        }
-        request = { kind: 'genImage', sessionId, prompt, refImageId: undefined };
-      } else {
+      if (kind === 'editImage') {
         if (!curImage) {
           setImageError('请先选择一张表现图');
           setImageLoading(false);
           return;
         }
         request = { kind: 'editImage', sessionId, prompt, imageId: curImage.imageId };
+      } else {
+        request = { kind: 'genImage', sessionId, prompt, refImageId: undefined };
       }
-      const parentPlanVersionId = curVersion?.versionId ?? null;
 
       if (clientRef.current !== mockGateway) {
         try {
           const { requestId } = await clientRef.current.run(request);
           unsubRef.current = clientRef.current.subscribe(requestId, {
             onDelta: () => undefined,
+            onUsage: accumulateUsage,
             onDone: (response) => {
               if (response.kind === 'image') {
-                addImageResponse(response, parentPlanVersionId);
+                addImageResponse(response);
               } else if (response.kind === 'error') {
                 setImageError(`${response.code}：${response.message}`);
                 setImageLoading(false);
@@ -238,18 +250,14 @@ export function useConversation(
         return;
       }
 
-      // mock 先行路径（TODO-API-STUB: P012 契约就绪后删除，统一走上方网关路径）
+      // mock 先行路径（无 LLM/图像端点配置时的离线兜底）
       try {
-        const refDataUrl =
-          kind === 'genImage'
-            ? await svgToPngDataUrl(curVersion!.svg, { scale: 1, background: '#ffffff' }).catch(() => null)
-            : (curImage?.url ?? null);
+        const refDataUrl = kind === 'editImage' ? (curImage?.url ?? null) : null;
         const url = await generateMockImageDataUrl(prompt, { refDataUrl });
         const meta: ImageMeta = {
           prompt,
           model: 'gpt-image-2 (mock)',
           provider: 'aichmock',
-          parentVersionId: parentPlanVersionId ?? undefined,
           parentImageId: kind === 'editImage' ? (curImage?.imageId ?? undefined) : undefined,
           width: 1024,
           height: 1024,
@@ -258,7 +266,7 @@ export function useConversation(
           status: 'succeeded',
           createdAt: new Date().toISOString(),
         };
-        addImageResponse({ kind: 'image', imageId: nextImageId(), url, meta }, parentPlanVersionId);
+        addImageResponse({ kind: 'image', imageId: nextImageId(), url, meta });
       } catch (err) {
         setImageError(`图像生成失败：${(err as Error).message}`);
         setImageLoading(false);
@@ -279,7 +287,6 @@ export function useConversation(
         options?: SendMessageOptions;
         request: AgentRequest;
         runOptions?: Parameters<GatewayClient["run"]>[1];
-        curVersion: PlanVersion | null;
         failures: number;
       }
     >
@@ -293,10 +300,9 @@ export function useConversation(
       assistantId: string;
       request: AgentRequest;
       runOptions?: Parameters<GatewayClient["run"]>[1];
-      curVersion: PlanVersion | null;
       failures: number;
     }) => {
-      const { text, options, assistantId, request, runOptions, curVersion, failures } = ctx;
+      const { text, options, assistantId, request, runOptions, failures } = ctx;
       const appendDelta = (delta: string): void => {
         setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, text: m.text + delta } : m)));
       };
@@ -338,7 +344,7 @@ export function useConversation(
         const nextFailures = failures + 1;
         const retriesDone = nextFailures - 1;
         if (retriesDone < MAX_SEND_RETRIES) {
-          failedRef.current.set(assistantId, { text, options, request, runOptions, curVersion, failures: nextFailures });
+          failedRef.current.set(assistantId, { text, options, request, runOptions, failures: nextFailures });
           setMessages((prev) =>
             prev.map((m) =>
               m.id === assistantId
@@ -384,23 +390,10 @@ export function useConversation(
           finishStream();
           return;
         }
-        if (response.kind === 'plan') {
-          const version: PlanVersion = {
-            versionId: response.versionId,
-            parentVersionId: curVersion?.versionId ?? null,
-            createdAt: new Date().toISOString(),
-            instruction: text,
-            plan: response.structure,
-            svg: response.svg,
-          };
-          setVersions((prev) => [...prev, version]);
-          setCurrentVersionId(response.versionId);
-          setSelectedRoomId(null);
-          setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, planVersionId: response.versionId } : m)));
-        } else if (response.kind === 'image') {
-          addImageResponse(response, curVersion?.versionId ?? null);
+        if (response.kind === 'image') {
+          addImageResponse(response);
           setMessages((prev) =>
-            prev.map((m) => (m.id === assistantId ? { ...m, text: `${m.text} 已生成表现图 ${response.imageId}。` } : m)),
+            prev.map((m) => (m.id === assistantId ? { ...m, text: `${m.text} 已生成图像 ${response.imageId}。` } : m)),
           );
         } else if (response.kind === 'error') {
           failAttempt(`出错了（${response.code}）：${response.message}`);
@@ -435,11 +428,7 @@ export function useConversation(
           const kindReq: AgentRequest =
             dispatchTarget === 'image-gen'
               ? { kind: 'genImage', sessionId, prompt: text, refImageId: options?.attachments?.find((x) => x.type === 'image' && x.imageId)?.imageId }
-              : dispatchTarget === 'research'
-                ? { kind: 'research', sessionId, prompt: text }
-                : curVersion
-                  ? { kind: 'editPlan', sessionId, instruction: text, versionId: curVersion.versionId }
-                  : { kind: 'draftPlan', sessionId, prompt: text, variants: 1 };
+              : { kind: 'research', sessionId, prompt: text };
           const appendDelta2 = (delta: string): void => {
             setMessages((prev) => prev.map((msg) => (msg.id === assistantId2 ? { ...msg, text: msg.text + delta } : msg)));
           };
@@ -448,7 +437,7 @@ export function useConversation(
             try {
               const { requestId: rid2 } = await clientRef.current.run(kindReq, { agent: dispatchTarget });
               activeRunRef.current = { requestId: rid2, assistantId };
-              unsubRef.current = clientRef.current.subscribe(rid2, { onDelta: appendDelta2, onTool: appendTool2, onDone, onError });
+              unsubRef.current = clientRef.current.subscribe(rid2, { onDelta: appendDelta2, onTool: appendTool2, onUsage: accumulateUsage, onDone, onError });
             } catch (err) {
               failAttempt(`接续失败：${(err as Error).message}`);
               finishStream();
@@ -479,7 +468,7 @@ export function useConversation(
         try {
           const { requestId } = await clientRef.current.run(request, runOptions);
           activeRunRef.current = { requestId, assistantId };
-          unsubRef.current = clientRef.current.subscribe(requestId, { onDelta: appendDelta, onThinking: appendThinking, onTool: appendTool, onDone, onError });
+          unsubRef.current = clientRef.current.subscribe(requestId, { onDelta: appendDelta, onThinking: appendThinking, onTool: appendTool, onUsage: accumulateUsage, onDone, onError });
         } catch (err) {
           failAttempt(`请求失败：${(err as Error).message}`);
           finishStream();
@@ -492,7 +481,6 @@ export function useConversation(
   const sendMessage = useCallback(
     (text: string, options?: SendMessageOptions) => {
       if (streaming) return;
-      const curVersion = currentVersionRef.current;
       // R5：子 agent 解析——显式选定（非 main）固定；main 按意图路由
       // R6-9：main = 主 Agent LLM 自主分派（dispatch_agent 工具）；显式选定则固定
       const resolvedAgent: SubAgentId = options?.agent && options.agent !== 'main' ? options.agent : 'main';
@@ -515,7 +503,7 @@ export function useConversation(
       setMessages((prev) => [...prev, userMsg, assistantMsg]);
       setStreaming(true);
 
-      // R5：按 agent 构建 request（附件：图片注册 id → genImage 参考图；文本已在 prompt 注入）
+      // R5/R7-1：按 agent 构建 request（附件：图片注册 id → genImage 参考图；文本已在 prompt 注入）
       const imageRef = options?.attachments?.find((a) => a.type === 'image' && a.imageId)?.imageId;
       let request: AgentRequest;
       if (resolvedAgent === 'image-gen') {
@@ -523,11 +511,7 @@ export function useConversation(
       } else if (resolvedAgent === 'research') {
         request = { kind: 'research', sessionId, prompt };
       } else {
-        const isReroll = /(重新生成|新方案|重来|重新设计|换一个)/.test(text);
-        request =
-          !curVersion || isReroll
-            ? { kind: 'draftPlan', sessionId, prompt, variants: 1 }
-            : { kind: 'editPlan', sessionId, instruction: prompt, versionId: curVersion.versionId };
+        request = { kind: 'chat', sessionId, prompt };
       }
 
       const runOptions: Parameters<GatewayClient["run"]>[1] = {
@@ -536,7 +520,7 @@ export function useConversation(
         analysisImageIds: options?.attachments?.map((a) => a.imageId).filter((x): x is string => !!x),
       };
 
-      startRun({ text, options, assistantId, request, runOptions, curVersion, failures: 0 });
+      startRun({ text, options, assistantId, request, runOptions, failures: 0 });
     },
     [streaming, sessionId, startRun],
   );
@@ -570,28 +554,10 @@ export function useConversation(
         assistantId: messageId,
         request: info.request,
         runOptions: info.runOptions,
-        curVersion: info.curVersion,
         failures: info.failures,
       });
     },
     [streaming, startRun],
-  );
-
-  const selectVersion = useCallback(
-    (version: PlanVersion) => {
-      if (version.versionId === currentVersionId) return;
-      setCurrentVersionId(version.versionId);
-      setSelectedRoomId(null);
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: nextMessageId(),
-          role: 'system',
-          text: `已回退到版本 ${version.versionId}。后续修改将基于该版本生成新节点。`,
-        },
-      ]);
-    },
-    [currentVersionId],
   );
 
   const selectImage = useCallback((image: ImageVersion) => {
@@ -599,101 +565,90 @@ export function useConversation(
     setImageError(null);
   }, []);
 
-  const selectRoom = useCallback((roomId: string | null) => {
-    setSelectedRoomId(roomId);
-  }, []);
-
+  /** R7-1：生成表现图（与平面方案解耦；无方案时直接按默认提示词出图）。 */
   const generateImage = useCallback(() => {
-    const curVersion = currentVersionRef.current;
-    if (!curVersion) {
-      setImageError('请先生成平面方案，再生成表现图');
-      return;
-    }
-    void runImageRequest('genImage', buildImagePrompt(curVersion.plan));
+    void runImageRequest('genImage', '生成一张建筑室内表现图：现代简约风格，自然采光，材质细节精致，构图完整。');
   }, [runImageRequest]);
 
   const editImage = useCallback(
     (image: ImageVersion) => {
-      void runImageRequest('editImage', `基于所选表现图（${image.imageId}）深化设计：优化材质与光影，整体更精致。`);
+      void runImageRequest('editImage', `基于所选图像（${image.imageId}）深化设计：优化材质与光影，整体更精致。`);
     },
     [runImageRequest],
   );
 
-  const rollbackToPlanFromImage = useCallback(
-    (image: ImageVersion) => {
-      const parent = image.parentPlanVersionId
-        ? versions.find((v) => v.versionId === image.parentPlanVersionId)
-        : null;
-      if (!parent) {
-        setImageError(`无法回退：父方案版本 ${image.parentPlanVersionId ?? '(空)'} 不在当前会话（历史会话仅恢复引用）`);
-        return;
-      }
-      setCurrentVersionId(parent.versionId);
-      setSelectedRoomId(null);
-      setMessages((prev) => [
-        ...prev,
-        { id: nextMessageId(), role: 'system', text: `已回退到版本 ${parent.versionId}。后续修改将基于该版本生成新节点。` },
-      ]);
+  /** R7-2：已注册图像入画布（上传/编辑产物；url 兼容 file:// 与 dataURL）。 */
+  const addRegisteredImage = useCallback(
+    (imageId: string, url: string, meta?: Partial<ImageMeta>) => {
+      if (images.some((img) => img.imageId === imageId)) return;
+      const version: ImageVersion = {
+        imageId,
+        url,
+        meta: {
+          prompt: meta?.prompt ?? '用户上传参考图',
+          model: meta?.model ?? 'user-upload',
+          provider: meta?.provider ?? 'user',
+          status: 'succeeded',
+          createdAt: meta?.createdAt ?? new Date().toISOString(),
+          ...meta,
+        },
+        createdAt: meta?.createdAt ?? new Date().toISOString(),
+      };
+      setImages((prev) => [...prev, version]);
+      setCurrentImageId(imageId);
     },
-    [versions],
+    [images],
   );
+
+  const removeImage = useCallback((imageId: string) => {
+    setImages((prev) => prev.filter((img) => img.imageId !== imageId));
+    setCurrentImageId((prev) => (prev === imageId ? null : prev));
+  }, []);
+
+  const duplicateImage = useCallback((imageId: string) => {
+    setImages((prev) => {
+      const source = prev.find((img) => img.imageId === imageId);
+      if (!source) return prev;
+      const copy: ImageVersion = {
+        ...source,
+        imageId: `${source.imageId}-c${Date.now().toString(36)}`,
+        meta: { ...source.meta, parentImageId: source.imageId },
+        createdAt: new Date().toISOString(),
+      };
+      return [...prev, copy];
+    });
+  }, []);
 
   const reset = useCallback(() => {
     unsubRef.current?.();
     unsubRef.current = null;
     setMessages([]);
-    setVersions([]);
-    setCurrentVersionId(null);
-    setSelectedRoomId(null);
     setStreaming(false);
     setImages([]);
     setCurrentImageId(null);
     setImageLoading(false);
     setImageError(null);
+    setUsage(null);
   }, []);
 
-  const restore = useCallback((content: SessionContent, plans?: StoragePlanRecord[]) => {
+  const restore = useCallback((content: SessionContent) => {
     unsubRef.current?.();
     unsubRef.current = null;
     setStreaming(false);
     setImageLoading(false);
     setImageError(null);
-    setSelectedRoomId(null);
     setMessages(
       content.messages.map((m) => ({
         id: m.id,
         role: m.role,
         text: m.text,
-        planVersionId: m.planVersionId,
+        ...(m.images && m.images.length > 0 ? { images: m.images } : {}),
       })),
     );
-    // R5：meta.db 可用 → 完整方案版本树（结构+SVG）；不可用 → 引用级提示
-    if (plans && plans.length > 0) {
-      const restored: PlanVersion[] = plans.map((p) => ({
-        versionId: p.versionId,
-        parentVersionId: p.parentVersionId,
-        createdAt: p.createdAt,
-        plan: p.structure,
-        svg: p.svg ?? '',
-      }));
-      setVersions(restored);
-      setCurrentVersionId(restored[restored.length - 1]?.versionId ?? null);
-    } else {
-      if (content.versionRefs.length > 0) {
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: `restore-note-${content.sessionId}`,
-            role: 'system',
-            text: `已恢复 ${content.versionRefs.length} 个方案版本引用（本机存储不可用，方案图示未能还原；可继续以文字指令迭代新版本）。`,
-          },
-        ]);
-      }
-      setVersions([]);
-      setCurrentVersionId(null);
-    }
     setImages(content.images);
     setCurrentImageId(content.images.length > 0 ? content.images[content.images.length - 1]!.imageId : null);
+    // R7-2：重启/切换会话后用量胶囊恢复（jsonl usage 行聚合；无数据保持隐藏）
+    setUsage(content.usage ?? null);
   }, []);
 
   const reattachActive = useCallback(
@@ -735,27 +690,9 @@ export function useConversation(
           finishStream();
         };
         const onDone = (response: AgentResponse): void => {
-          if (response.kind === 'plan') {
-            const version: PlanVersion = {
-              versionId: response.versionId,
-              parentVersionId: currentVersionRef.current?.versionId ?? null,
-              createdAt: new Date().toISOString(),
-              instruction: run.prompt,
-              plan: response.structure,
-              svg: response.svg,
-            };
-            setVersions((prev) => (prev.some((v) => v.versionId === response.versionId) ? prev : [...prev, version]));
-            setCurrentVersionId(response.versionId);
-            const assistantId = assistantIds.get(requestId);
-            if (assistantId) {
-              setMessages((prev) =>
-                prev.map((m) => (m.id === assistantId ? { ...m, text: m.text, planVersionId: response.versionId } : m)),
-              );
-            }
-            settle('方案已生成。');
-          } else if (response.kind === 'image') {
-            addImageResponse(response, currentVersionRef.current?.versionId ?? null);
-            settle(`已生成表现图 ${response.imageId}。`);
+          if (response.kind === 'image') {
+            addImageResponse(response);
+            settle(`已生成图像 ${response.imageId}。`);
           } else if (response.kind === 'error') {
             settle(`出错了（${response.code}）：${response.message}`, true);
           } else {
@@ -765,35 +702,33 @@ export function useConversation(
         const onError = (err: { code: string; message: string }): void => {
           settle(`出错了（${err.code}）：${err.message}`, true);
         };
-        void clientRef.current.subscribe(requestId, { onDelta: appendDelta, onDone, onError });
+        void clientRef.current.subscribe(requestId, { onDelta: appendDelta, onUsage: accumulateUsage, onDone, onError });
       }
     },
     [streaming, clientRef, addImageResponse, finishStream],
   );
 
-  const hasContent = messages.length > 0 || streaming || imageLoading;
+  // R7-2 补：画布已有图像（如 idle 会话先传图）也构成"工作态"——否则图片入册后画布不渲染，用户看不到图
+  const hasContent = messages.length > 0 || streaming || imageLoading || images.length > 0;
 
   return {
     messages,
     stop,
     retry,
-    versions,
     images,
-    currentVersion,
-    currentVersionId,
     currentImage: currentImageRef.current,
     streaming,
     imageLoading,
     imageError,
-    selectedRoomId,
+    usage,
     hasContent,
     sendMessage,
-    selectVersion,
     selectImage,
-    selectRoom,
     generateImage,
     editImage,
-    rollbackToPlanFromImage,
+    addRegisteredImage,
+    removeImage,
+    duplicateImage,
     reset,
     restore,
     reattachActive,

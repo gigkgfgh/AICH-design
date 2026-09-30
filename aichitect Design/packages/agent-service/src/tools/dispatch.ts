@@ -5,14 +5,14 @@
 
 import type { ToolBinding } from "../adapters/common.js";
 
-const DISPATCH_AGENTS = ["image-gen", "plan-draft", "research"] as const;
+const DISPATCH_AGENTS = ["image-gen", "research"] as const;
 
 export function buildDispatchToolBinding(): ToolBinding {
   return {
     def: {
       name: "dispatch_agent",
       description:
-        "把当前用户请求分派给专职子 agent 处理（image-gen=生成/编辑表现图；plan-draft=Beta 平面方案起草；research=案例/规范/材料调研）。" +
+        "把当前用户请求分派给专职子 agent 处理（image-gen=生成/编辑表现图；research=案例/规范/材料调研）。" +
         "当用户意图明确属于上述专职领域、且超出通用助手能力时调用本工具；分派后宿主会自动让子 agent 接手同一请求。每次只分派一个。",
       label: "分派子 Agent",
       parameters: {

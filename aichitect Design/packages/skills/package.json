@@ -2,9 +2,9 @@
   "name": "@aichdesign/skills",
   "version": "0.1.0",
   "private": true,
-  "description": "AICH Design 产品 Skill 包：plan-draft（L2 指令 + references/schema + references/render-spec，P009）。SKILL.md 遵循 Anthropic Agent Skills 开放标准（§4.1）",
+  "description": "AICH Design 产品 Skill 包：image-gen / research（SKILL.md 遵循 Anthropic Agent Skills 开放标准 §4.1；R7-1：plan-draft 随方案链路移除）",
   "type": "module",
-  "files": ["plan-draft"],
+  "files": ["image-gen", "research"],
   "exports": {
     "./plan-draft/SKILL.md": "./plan-draft/SKILL.md",
     "./plan-draft/references/schema.json": "./plan-draft/references/schema.json",

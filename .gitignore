@@ -13,3 +13,5 @@ Thumbs.db
 
 # ZCode 本地会话/计划数据（工具产物）
 .zcode/
+# 项目文档（本地维护，不入库）
+aichitect Design/docs/

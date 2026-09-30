@@ -31,6 +31,13 @@ describe("R6-17 buildLlmModel：DeepSeek 官方对齐", () => {
     expect(m!.compat).toBeUndefined();
   });
 
+  it("R7-1 input：默认声明图像输入；imageInput=false 关闭（纯文本端点退出开关）", () => {
+    const def = buildLlmModel({ baseURL: "https://api.deepseek.com", apiKeyRef: "sk", model: "deepseek-flash" });
+    expect(def!.input).toEqual(["text", "image"]);
+    const off = buildLlmModel({ baseURL: "https://text-only.example/v1", apiKeyRef: "sk", model: "m", imageInput: false });
+    expect(off!.input).toEqual(["text"]);
+  });
+
   it("isDeepSeekBaseUrl：大小写不敏感；其他域名不误判", () => {
     expect(isDeepSeekBaseUrl("https://API.DeepSeek.com")).toBe(true);
     expect(isDeepSeekBaseUrl("https://grsai.dakka.com.cn/v1")).toBe(false);

@@ -75,7 +75,7 @@ describe("ImageRegistry（B-4 会话图像元数据注册）", () => {
 
     const port = new MockImageProvider();
     const result = await port.generate({ prompt: "客厅表现图", size: "1024x1024", quality: "medium", outputFormat: "png", n: 1 });
-    const registered = registry.store("s-1", result, { refPlanVersionId: "v_plan_1", refImageId: "ref-1" });
+    const registered = registry.store("s-1", result, { refImageId: "ref-1" });
 
     expect(registered.url.startsWith("file:///")).toBe(true);
     const pngPath = join(sessionsDir, "images", `${result.imageId}.png`);
@@ -87,7 +87,6 @@ describe("ImageRegistry（B-4 会话图像元数据注册）", () => {
     const entry = imageEntries[0]!.data as { imageId: string; url: string; meta: Record<string, unknown> };
     expect(entry.imageId).toBe(result.imageId);
     expect(entry.url).toBe(registered.url);
-    expect(entry.meta.parentVersionId).toBe("v_plan_1");
     expect(entry.meta.refImageId).toBe("ref-1");
     expect(entry.meta.model).toBe("mock-image-0.1");
   });

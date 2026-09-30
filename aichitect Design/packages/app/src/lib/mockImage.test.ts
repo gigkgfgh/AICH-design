@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { generateMockImageDataUrl } from './mockImage';
-import type { CanvasContextLike, CanvasLike, ImageLike } from './svgToPng';
+import type { CanvasContextLike, CanvasLike, ImageLike } from './mockImage';
 
 interface MockCanvas extends CanvasLike {
   log: string[];
@@ -40,7 +40,7 @@ function makeMockCanvas(): MockCanvas {
     height: 0,
     log,
     getContext: () => ctx as unknown as CanvasContextLike,
-    toDataURL: (type) => {
+    toDataURL: (type?: string) => {
       log.push(`toDataURL:${type ?? 'image/png'}`);
       return 'data:image/png;base64,mock';
     },

@@ -22,8 +22,6 @@ export interface AgentServiceConfig {
   } | null;
   /** mock 流式延迟（毫秒）。 */
   mockDelayMs: number;
-  /** P011 严格 json_schema 输出模式（AICH_STRICT_JSON，默认 "1" 开启）。 */
-  strictJson: boolean;
   /** P012 图像端口（§6.2：独立于 LLM，可指向任意 OpenAI 兼容端点）。 */
   image: {
     /** AICH_IMAGE_BASE_URL，默认 OpenAI 官方（https://api.openai.com/v1）。 */
@@ -48,8 +46,6 @@ export interface AgentServiceConfig {
     /** AICH_IMAGE_COST_LIMIT_USD，图像成本护栏上限；≤0 关闭，默认 0.5。 */
     imageCostLimitUsd: number;
   };
-  /** P019 会话上下文预算（估算 token；AICH_CONTEXT_BUDGET_TOKENS，默认 8000，70% 触发压缩）。 */
-  contextBudgetTokens: number;
   /** R5：联网检索（research 子 agent 的 web_search/fetch_page 工具）。 */
   search: {
     /** AICH_SEARCH_PROVIDER：disabled（默认）/ searxng / duckduckgo。 */
@@ -63,8 +59,8 @@ export interface AgentServiceConfig {
   skillsDir: string;
   /** R6-8：内置技能目录（产品自带 SKILL.md；AICH_BUILTIN_SKILLS_DIR）。 */
   builtinSkillsDir: string;
-  /** R6-6：多模型条目（AICH_LLM_MODELS JSON；key 明文仅进程内）。 */
-  llmModels: Array<{ id: string; name: string; baseUrl: string; model: string; apiKey: string; thinking: string }>;
+  /** R6-6：多模型条目（AICH_LLM_MODELS JSON；key 明文仅进程内；imageInput=端点支持图像输入）。 */
+  llmModels: Array<{ id: string; name: string; baseUrl: string; model: string; apiKey: string; thinking: string; imageInput: boolean; contextWindow: number }>;
   /** R6-6：激活条目 id。 */
   llmActiveId: string;
   /** R6-9：Agent Loops 上下文日志（AICH_LOOP_LOG，默认关）。 */
@@ -109,8 +105,6 @@ export function loadConfig(): AgentServiceConfig {
           }
         : null,
     mockDelayMs: Number(env("AICH_MOCK_DELAY_MS") ?? "30"),
-    // P011：缺省 "1" 开启严格档（联调定案）；"0" 显式关闭回到 R1 宽容档。
-    strictJson: (env("AICH_STRICT_JSON") ?? "1") !== "0",
     image: {
       baseURL: env("AICH_IMAGE_BASE_URL") ?? "https://api.openai.com/v1",
       apiKey: env("AICH_IMAGE_API_KEY"),
@@ -149,7 +143,6 @@ export function loadConfig(): AgentServiceConfig {
       retryBaseDelayMs: Math.max(0, Math.floor(envNumber("AICH_RUN_RETRY_BASE_MS", 500))),
       imageCostLimitUsd: envNumber("AICH_IMAGE_COST_LIMIT_USD", 0.5),
     },
-    contextBudgetTokens: Math.max(1, Math.floor(envNumber("AICH_CONTEXT_BUDGET_TOKENS", 8000))),
     search: {
       provider: (() => {
         const raw = env("AICH_SEARCH_PROVIDER");
@@ -178,6 +171,10 @@ export function loadConfig(): AgentServiceConfig {
             model: String(m.model),
             apiKey: String(m.apiKey),
             thinking: typeof m.thinking === "string" ? m.thinking : "off",
+            // R7-1：默认支持图像输入（DeepSeek 官方等视觉端点开箱即用）；纯文本端点经设置关闭。
+            imageInput: m.imageInput !== false,
+            // R7-2：条目级上下文窗口（<=0/缺省 = 服务端默认）。
+            contextWindow: Number(m.contextWindow) > 0 ? Math.floor(Number(m.contextWindow)) : 0,
           }));
       } catch {
         return [];

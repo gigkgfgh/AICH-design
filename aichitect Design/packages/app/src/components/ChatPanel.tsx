@@ -9,11 +9,14 @@
  */
 
 import { useCallback, useEffect, useRef, useState, type DragEvent, type FormEvent, type KeyboardEvent, type ReactElement } from 'react';
-import type { Attachment, ChatMessage, PlanVersion, SubAgentId, ThinkingLevel } from '../types/contracts';
+import type { Attachment, ChatMessage, SubAgentId, ThinkingLevel } from '../types/contracts';
 import { AgentSelector, ModelSelector } from './composer/Selectors';
 import { AttachmentBar, ingestFiles } from './composer/AttachmentBar';
 import { PlusMenu, type SelectedSkill } from './composer/PlusMenu';
-import { MarkdownContent, PlanThumb } from './MessageContent';
+import { MarkdownContent } from './MessageContent';
+import { UsageIndicator } from './UsageIndicator';
+import type { SessionUsage } from '../hooks/useConversation';
+import { resolveImageSrcs, SafeImage } from './SafeImage';
 
 export interface ChatPanelProps {
   messages: ChatMessage[];
@@ -23,14 +26,12 @@ export interface ChatPanelProps {
   onSend: (text: string, options?: SendOptions) => void;
   /** 形态：idle = 空会话居中（AppShell 仅渲染中列）；work = 常规工作区。默认 work */
   variant?: 'idle' | 'work';
-  /** plan 版本引用点击 → 定位右栏方案 Tab */
-  onLocateVersion?: (versionId: string) => void;
   /** R6-15：失败消息重试（上游接口错误时前端重发，3 次上限） */
   onRetry?: (messageId: string) => void;
   /** R6-19：主动打断/终止当前生成 */
   onStop?: () => void;
-  /** R6：方案版本树（plan 消息内嵌缩略图用） */
-  versions?: PlanVersion[];
+  /** R7-1：对话内图片点击 → 放大预览（Lightbox 由 App 承载） */
+  onOpenImage?: (src: string) => void;
   /* ---- R5 composer 状态 ---- */
   agent?: SubAgentId;
   onAgentChange?: (v: SubAgentId) => void;
@@ -52,6 +53,8 @@ export interface ChatPanelProps {
   showThinking?: boolean;
   /** R6-6：是否显示工具调用（设置开关） */
   showToolCalls?: boolean;
+  /** R7-2：模型用量聚合（无数据不渲染指示器） */
+  usage?: SessionUsage | null;
 }
 
 /** ZCode 风格可折叠区块（思考/工具调用的层级区分：小字、暗色、左侧竖线、chevron）。 */
@@ -79,13 +82,13 @@ export interface SendOptions {
 }
 
 const SUGGESTIONS = [
-  '帮我设计一套 90 平三室两厅的住宅，主卧朝南',
-  '12x8米 两室一厅，客厅采光好，带南向阳台',
-  '调研：小户型开放式厨房的典型案例与规范要求',
+  '生成一张现代简约客厅表现图，自然采光，原木色调',
+  '为「临水茶室」构思几个建筑意象并配图',
+  '调研：材料行情与经典住宅案例',
 ];
 
 export function ChatPanel(props: ChatPanelProps): ReactElement {
-  const { messages, streaming, onSend, variant = 'work', onLocateVersion, onRetry, onStop } = props;
+  const { messages, streaming, onSend, variant = 'work', onRetry, onStop } = props;
   const [input, setInput] = useState('');
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -225,6 +228,30 @@ export function ChatPanel(props: ChatPanelProps): ReactElement {
       dragDepthRef.current = 0;
       setDragActive(false);
       setIngestError(null);
+      // R7-2：画布拖入的图像引用（imageId 保留参考图语义；file:// 先解析为可显示 dataURL）
+      const raw = e.dataTransfer.getData('application/x-aich-image');
+      if (raw) {
+        try {
+          const ref = JSON.parse(raw) as { imageId?: unknown; url?: unknown; name?: unknown };
+          const imageId = typeof ref.imageId === 'string' ? ref.imageId : null;
+          const url = typeof ref.url === 'string' ? ref.url : null;
+          const name = typeof ref.name === 'string' && ref.name.length > 0 ? ref.name : imageId;
+          if (imageId && url) {
+            void resolveImageSrcs([url]).then((map) => {
+              props.onAddAttachment?.({
+                id: `att-ref-${Date.now().toString(36)}`,
+                type: 'image',
+                name: name ?? imageId,
+                imageId,
+                url: map.get(url) ?? url,
+              });
+            });
+            return;
+          }
+        } catch {
+          // 非 JSON 载荷 → 按普通文件处理
+        }
+      }
       ingestFromFiles(Array.from(e.dataTransfer.files));
     },
   };
@@ -286,16 +313,24 @@ export function ChatPanel(props: ChatPanelProps): ReactElement {
     </div>
   );
 
+  // R7-2 反馈：用量胶囊在输入框容器外（下方独立行，参考 DeepSeek 布局），不随 composer 圆角容器
+  const composerBlock = (
+    <>
+      {composer}
+      {props.usage && <UsageIndicator usage={props.usage} />}
+    </>
+  );
+
   if (variant === 'idle') {
     return (
       <section className="chat-panel chat-panel--idle" aria-label="方案对话" {...panelDragHandlers}>
         <div className="chat-panel__hero">
           <h1 className="chat-panel__hero-title">AICH Design</h1>
           <p className="chat-panel__hero-sub">
-            用一句话描述你的户型需求，生成可编辑的平面方案（SVG）与表现图；每次修改都是新版本，可随时回退。
-            左下角可切换方案起草 / 图像生成 / 案例调研子 agent。
+            用一句话描述画面，生成建筑表现图；上传或粘贴图片可作为参考。
+            左下角可切换 图像生成 / 案例调研子 agent。
           </p>
-          {composer}
+          {composerBlock}
           <div className="chat-panel__suggestions">
             {SUGGESTIONS.map((s) => (
               <button
@@ -352,7 +387,15 @@ export function ChatPanel(props: ChatPanelProps): ReactElement {
                   {(msg.images?.length ?? 0) > 0 && (
                     <div className="chat-msg__imgs">
                       {msg.images!.map((src, i) => (
-                        <img key={i} className="chat-msg__img" src={src} alt={`附件图片 ${i + 1}`} loading="lazy" />
+                        <button
+                          key={i}
+                          type="button"
+                          className="chat-msg__img-btn"
+                          title="点击放大预览"
+                          onClick={() => props.onOpenImage?.(src)}
+                        >
+                          <SafeImage src={src} alt={`附件图片 ${i + 1}`} className="chat-msg__img" />
+                        </button>
                       ))}
                     </div>
                   )}
@@ -367,20 +410,6 @@ export function ChatPanel(props: ChatPanelProps): ReactElement {
                   ↻ 重试（第 {msg.retry.attempt}/{msg.retry.max} 次）
                 </button>
               )}
-              {msg.planVersionId && (() => {
-                const version = props.versions?.find((v) => v.versionId === msg.planVersionId);
-                return version && version.svg ? <PlanThumb version={version} /> : null;
-              })()}
-              {msg.planVersionId && onLocateVersion && (
-                <button
-                  type="button"
-                  className="chat-msg__meta chat-msg__meta--link"
-                  onClick={() => onLocateVersion(msg.planVersionId!)}
-                  title="在右侧预览中查看该版本"
-                >
-                  方案版本：{msg.planVersionId} ↗
-                </button>
-              )}
             </div>
           </div>
         ))}
@@ -392,7 +421,7 @@ export function ChatPanel(props: ChatPanelProps): ReactElement {
         <div ref={bottomRef} />
       </div>
 
-      {composer}
+      {composerBlock}
     </section>
   );
 }

@@ -4,6 +4,5 @@
  * pi-ai 事件流适配（stream.ts）仅真实内核路径使用。
  */
 
-export * from "./plans.js";
 export * from "./replies.js";
 export * from "./stream.js";

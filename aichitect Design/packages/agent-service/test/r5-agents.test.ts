@@ -69,12 +69,11 @@ describe("htmlToText", () => {
 
 /* ---------------- agent 预设 ---------------- */
 
-describe('AGENT_REGISTRATIONS（R6-8：内置技能化）', () => {
-  it('四套注册；image-gen 首要、plan-draft Beta 降级；skillName 映射正确', async () => {
+describe('AGENT_REGISTRATIONS（R6-8：内置技能化；R7-1 起两套）', () => {
+  it('注册表收敛 image-gen/research；skillName 映射正确', async () => {
     const { AGENT_REGISTRATIONS, skillNameForAgent } = await import('../src/agents/presets.js');
-    expect(Object.keys(AGENT_REGISTRATIONS).sort()).toEqual(['image-gen', 'main', 'plan-draft', 'research']);
+    expect(Object.keys(AGENT_REGISTRATIONS).sort()).toEqual(['image-gen', 'main', 'research']);
     expect(AGENT_REGISTRATIONS['image-gen']?.skillName).toBe('image-gen');
-    expect(AGENT_REGISTRATIONS['plan-draft']?.description).toContain('Beta');
     expect(AGENT_REGISTRATIONS.main?.skillName).toBeUndefined();
     expect(skillNameForAgent('research')).toBe('research');
     expect(skillNameForAgent(undefined)).toBeUndefined();
@@ -84,15 +83,11 @@ describe('AGENT_REGISTRATIONS（R6-8：内置技能化）', () => {
     const { loadSkillsFromDirs } = await import('../src/skills/loader.js');
     const { fileURLToPath } = await import('node:url');
     const skillsDir = fileURLToPath(new URL('../../skills', import.meta.url));
-    const skills = loadSkillsFromDirs([skillsDir], ['image-gen', 'research', 'plan-draft']);
-    expect(skills.map((s) => s.name)).toEqual(['image-gen', 'research', 'plan-draft']);
+    const skills = loadSkillsFromDirs([skillsDir], ['image-gen', 'research']);
+    expect(skills.map((s) => s.name)).toEqual(['image-gen', 'research']);
     const img = skills.find((s) => s.name === 'image-gen')!;
     expect(img.allowedTools).toEqual(['image_generate', 'image_edit']);
     expect(img.body).toContain('参数契约');
-    const plan = skills.find((s) => s.name === 'plan-draft')!;
-    expect(plan.description).toContain('Beta');
-    expect(plan.allowedTools).toContain('render_plan_svg');
-    expect(plan.body).toContain('执行约束');
   });
 });
 

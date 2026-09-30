@@ -27,10 +27,6 @@ export const ErrorCode = {
   RUNNER_ERROR: "RUNNER_ERROR",
   /** 上游 Provider 不可用（断网 / 端点失败 / 鉴权失败）。 */
   PROVIDER_UNAVAILABLE: "PROVIDER_UNAVAILABLE",
-  /** PlanStructure 未通过 validate_plan 校验。 */
-  PLAN_VALIDATE_FAILED: "PLAN_VALIDATE_FAILED",
-  /** plan_patch 修正回环超过上限（≤2 护栏，P0-3）。 */
-  PLAN_PATCH_LIMIT_EXCEEDED: "PLAN_PATCH_LIMIT_EXCEEDED",
   /** 图像成本护栏：会话图像已用成本 + 单次预估超过上限（P018，AICH_IMAGE_COST_LIMIT_USD）。 */
   IMAGE_COST_LIMIT_EXCEEDED: "IMAGE_COST_LIMIT_EXCEEDED",
   /** 未知内部错误（兜底）。 */
@@ -58,9 +54,6 @@ export function httpStatusFor(code: ErrorCode | string): number {
     case ErrorCode.CONFLICT:
     case ErrorCode.REQUEST_CANCELLED:
       return 409;
-    case ErrorCode.PLAN_VALIDATE_FAILED:
-    case ErrorCode.PLAN_PATCH_LIMIT_EXCEEDED:
-      return 422;
     case ErrorCode.IMAGE_COST_LIMIT_EXCEEDED:
       return 429;
     case ErrorCode.PROVIDER_UNAVAILABLE:

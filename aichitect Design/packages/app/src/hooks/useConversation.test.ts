@@ -18,9 +18,10 @@ describe('classifyAgentIntent（主 Agent 自动路由）', () => {
     expect(classifyAgentIntent('帮我查下住宅设计规范对采光的要求')).toBe('research');
     expect(classifyAgentIntent('这些材料的造价行情如何')).toBe('research');
   });
-  it('设计/修改意图 → plan-draft', () => {
-    expect(classifyAgentIntent('设计一个 12x8米 两室一厅')).toBe('plan-draft');
-    expect(classifyAgentIntent('把厨房扩大一些')).toBe('plan-draft');
+  it('其他意图 → main（R7-1：通用对话由主 Agent 承接）', () => {
+    expect(classifyAgentIntent('设计一个 12x8米 两室一厅')).toBe('main');
+    expect(classifyAgentIntent('把厨房扩大一些')).toBe('main');
+    expect(classifyAgentIntent('你好')).toBe('main');
   });
 });
 

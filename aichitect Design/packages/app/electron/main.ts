@@ -23,22 +23,12 @@ import type {
   AgentRequest,
   GatewayStatus,
   KeyConfigInput,
-  PlanStructure,
   RunOptions,
   SecretsStatus,
   SessionContent,
   SessionSummary,
   SseEventEnvelope,
 } from '../src/types/contracts.js';
-
-/** R5：storage:plans IPC 返回的历史方案记录（结构+SVG 完整恢复）。 */
-export interface StoragePlanRecord {
-  versionId: string;
-  parentVersionId: string | null;
-  structure: PlanStructure;
-  svg: string | null;
-  createdAt: string;
-}
 import { parseSessionContent, summarizeSession, SESSION_ID_RE } from '../src/lib/sessionFiles.js';
 import { isInsideRoots, sniffImageMime, toDataUrl, toLocalPath, IMAGE_MAX_BYTES } from '../src/lib/imageAccess.js';
 
@@ -153,7 +143,6 @@ let secrets: SecretsService | null = null;
 let metaDb: import('@aichdesign/storage').StorageHandle | null = null;
 let storageRepos: {
   db: import('@aichdesign/storage').StorageHandle["db"];
-  plans: import('@aichdesign/storage').PlanVersionRepository;
   images: import('@aichdesign/storage').ImageMetaRepository;
 } | null = null;
 
@@ -192,13 +181,18 @@ async function buildAgentServiceEnv(): Promise<Record<string, string>> {
       if (model) env.AICH_IMAGE_MODEL = model;
     }
     const llmKey = await secrets.readSecret(REFS.llmApiKey);
+    const secretsStatusHasModels = (secrets.status().models?.length ?? 0) > 0;
     const modelEntries = secrets.modelsForInjection();
     if (modelEntries.length > 0) {
       // R6-6：多模型注入（每条目独立 baseUrl/Key/thinking；agent-service 按条目建 provider）
       env.AICH_LLM_MODELS = JSON.stringify(modelEntries);
       env.AICH_LLM_ACTIVE_ID = secrets.activeModelId();
+    } else if (secretsStatusHasModels) {
+      // R7-2：条目存在但全部未通过注入校验 → 不回退旧单字段（残留的旧端点会成为"假接线"，
+      // 症状恰似"重启后必须重新保存才能用"）；宁走 mock 并明确告警。
+      process.stderr.write('[main] 模型条目存在但均未通过注入校验（见 [secrets] 诊断行），不回退旧单字段配置；请在 设置 → LLM 端点 重新保存\n');
     } else if (llmKey) {
-      // 兼容回退：旧单模型配置（R5）
+      // 兼容回退：旧单模型配置（R5；仅在从未配置过多模型条目时生效）
       env.AICH_PROVIDER = 'openai-compatible';
       env.AICH_LLM_API_KEY_REF = llmKey;
       const baseUrl = await secrets.readSetting(REFS.llmBaseUrl);
@@ -309,6 +303,8 @@ function trySpawnAgentService(extraEnv: Record<string, string>): AgentServiceSta
     const handshakeTimeout = setTimeout(() => {
       if (agentServiceStatus !== 'ready') {
         agentServiceStatus = 'stub';
+        // R7-2：stub 原因可见（此前静默 kill，用户只见"没配置"，无从排查）
+        process.stderr.write('[main] agent-service 15s 握手超时 → stub（渲染层走 mock；可重启应用或检查 agent-service.log）\n');
         child.kill();
       }
     }, 15000);
@@ -406,7 +402,6 @@ async function initStorage(): Promise<void> {
     metaDb = storage.openStorage(dbPath);
     storageRepos = {
       db: metaDb.db,
-      plans: new storage.PlanVersionRepository(metaDb.db),
       images: new storage.ImageMetaRepository(metaDb.db),
     };
   } catch (err) {
@@ -416,20 +411,13 @@ async function initStorage(): Promise<void> {
   }
 }
 
-/** done 信封持久化（方案版本/图像元数据 → meta.db；无句柄时静默跳过）。 */
+/** done 信封持久化（图像元数据 → meta.db；无句柄时静默跳过）。 */
 function persistEnvelope(sessionId: string, envelope: SseEventEnvelope): void {
   if (!storageRepos || envelope.type !== 'done') return;
   const data = envelope.data as Record<string, unknown> | undefined;
   if (!data || typeof data !== 'object') return;
   try {
-    if (data['kind'] === 'plan') {
-      void storageRepos.plans.upsert({
-        versionId: String(data['versionId']),
-        sessionId,
-        structure: data['structure'] as never,
-        svg: typeof data['svg'] === 'string' ? data['svg'] : null,
-      });
-    } else if (data['kind'] === 'image') {
+    if (data['kind'] === 'image') {
       void storageRepos.images.upsert({
         imageId: String(data['imageId']),
         sessionId,
@@ -787,7 +775,6 @@ function registerIpcHandlers(): void {
         title: '（新会话）',
         messages: [],
         images: [],
-        versionRefs: [],
       };
     }
     const stat = fs.statSync(file);
@@ -816,30 +803,6 @@ function registerIpcHandlers(): void {
       }
     }
     return { ok: true, removed };
-  });
-
-  // R5：历史方案完整恢复（meta.db plan_version → 结构+SVG；Electron≥35/node:sqlite 可用）
-  ipcMain.handle('storage:plans', (_e, sessionId: string): Promise<StoragePlanRecord[]> => {
-    if (!storageRepos) {
-      return Promise.resolve([]); // meta.db 不可用（旧 Electron）→ 降级为引用级恢复
-    }
-    if (!SESSION_ID_RE.test(sessionId)) {
-      return Promise.resolve([]);
-    }
-    try {
-      return Promise.resolve(
-        storageRepos.plans.listBySession(sessionId).map((v) => ({
-          versionId: v.versionId,
-          parentVersionId: v.parentVersionId,
-          structure: v.structure,
-          svg: v.svg,
-          createdAt: v.createdAt,
-        })),
-      );
-    } catch (err) {
-      process.stderr.write(`[storage] 读取方案版本失败：${(err as Error).message}\n`);
-      return Promise.resolve([]);
-    }
   });
 
   // ---- G8：file:// 图像兜底（白名单读取 → dataURL；dev http 源无法直接显示 file:// img） ----

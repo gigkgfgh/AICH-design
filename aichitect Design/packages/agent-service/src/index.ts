@@ -1,6 +1,6 @@
 /**
  * @aichdesign/agent-service 入口
- * 导出：start()（库方式启动网关，测试用）、buildPlanToolBindings()、buildSystemPrompt()。
+ * 导出：start()（库方式启动网关，测试用）、buildImageToolBindings()/resolveImagePort()、buildSystemPrompt()。
  * bin 直跑入口在 src/main.ts（AICH_GATEWAY_READY 就绪协议输出 stdout）。
  */
 
@@ -12,4 +12,4 @@ export { AsyncQueue } from "./runtime/async-queue.js";
 export { JsonlSessionStore } from "./session/jsonl-store.js";
 export { UsageTracker } from "./telemetry/usage-tracker.js";
 export { createHttpGateway } from "./gateway/http-server.js";
-export { start, buildPlanToolBindings, buildSystemPrompt } from "./main.js";
+export { start, buildImageToolBindings, resolveImagePort, buildSystemPrompt } from "./main.js";

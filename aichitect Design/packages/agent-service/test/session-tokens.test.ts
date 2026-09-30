@@ -84,7 +84,7 @@ async function startGateway() {
     call("/v1/run", {
       method: "POST",
       headers: { authorization: `Bearer ${bearer}` },
-      body: JSON.stringify({ requestId, sessionId, request: { kind: "draftPlan", sessionId, prompt: "两室一厅" } }),
+      body: JSON.stringify({ requestId, sessionId, request: { kind: "chat", sessionId, prompt: "两室一厅" } }),
     });
   return { gateway, call, run };
 }

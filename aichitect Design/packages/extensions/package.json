@@ -2,7 +2,7 @@
   "name": "@aichdesign/extensions",
   "version": "0.1.0",
   "private": true,
-  "description": "AICH Design 产品 Extension：plan-tools（validate_plan / render_plan_svg / plan_patch，P008）+ vitest 用例。零 pi 依赖：纯函数可被 MockAdapter 与 PiAgentCoreAdapter 共用",
+  "description": "AICH Design 产品 Extension：image-tools（image_generate / image_edit，P012）+ vitest 用例。零 pi 依赖：可被 MockAdapter 与 PiAgentCoreAdapter 共用",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

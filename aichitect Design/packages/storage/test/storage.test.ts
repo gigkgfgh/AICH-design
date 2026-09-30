@@ -1,6 +1,7 @@
 /**
  * P017 storage 测试：迁移幂等 / fixture 往返（v0 库 → open 升级 → 数据可读）/
- * 备份先行 / fail-closed / WAL PRAGMA / Repository（版本树、图像元数据、费用幂等记账）。
+ * 备份先行 / fail-closed / WAL PRAGMA / Repository（图像元数据、费用幂等记账）。
+ * R7-1：plan_version 仓储随方案链路移除。
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
@@ -13,11 +14,10 @@ import {
   readUserVersion,
   STORAGE_SCHEMA_VERSION,
   SessionRepository,
-  PlanVersionRepository,
   ImageMetaRepository,
   CostRepository,
 } from "../src/index.js";
-import type { PlanStructure, ImageMeta } from "@aichdesign/shared";
+import type { ImageMeta } from "@aichdesign/shared";
 
 let dir: string;
 
@@ -31,18 +31,6 @@ afterEach(() => {
 });
 
 const dbPath = () => join(dir, "meta.db");
-
-function samplePlan(schemaVersion?: number): PlanStructure {
-  return {
-    ...(schemaVersion === undefined ? {} : { schemaVersion }),
-    bounds: { widthM: 10, heightM: 8 },
-    rooms: [
-      { id: "r1", name: "客厅", type: "living", x: 0, y: 0, w: 5, h: 4, orientation: "S" },
-    ],
-    walls: [{ id: "w1", x1: 0, y1: 0, x2: 10, y2: 0, thicknessMm: 200 }],
-    openings: [{ kind: "door", wallId: "w1", offsetM: 1, widthM: 0.9 }],
-  };
-}
 
 describe("openStorage：迁移与 PRAGMA", () => {
   it("新库：迁移到最新版本，幂等重开不重复应用", () => {
@@ -81,9 +69,9 @@ describe("openStorage：迁移与 PRAGMA", () => {
     expect(existsSync(path)).toBe(true);
 
     // 升级后写入并读回（数据可读）
-    const plans = new PlanVersionRepository(h.db);
-    plans.upsert({ versionId: "v1", sessionId: "s1", structure: samplePlan() });
-    expect(plans.get("v1")?.structure.bounds.widthM).toBe(10);
+    const costs = new CostRepository(h.db);
+    costs.record({ sessionId: "s1", requestId: "r1", requestKind: "chat", model: "m", provider: "mock", promptTokens: 1, completionTokens: 1, totalTokens: 2, costUsd: 0.01, latencyMs: 1, ok: true, ts: "2026-08-12T00:00:00Z" });
+    expect(costs.forSession("s1").length).toBe(1);
     h.close();
   });
 
@@ -132,33 +120,7 @@ describe("openStorage：迁移与 PRAGMA", () => {
   });
 });
 
-describe("Repository：版本树 / 图像 / 费用", () => {
-  it("plan_version：版本树 upsert + 按 session 查询（时间升序，父链保留）", () => {
-    const h = openStorage(dbPath());
-    const plans = new PlanVersionRepository(h.db);
-    plans.upsert({ versionId: "v1", sessionId: "s1", structure: samplePlan(), createdAt: "2026-08-12T00:00:00Z" });
-    plans.upsert({ versionId: "v2", sessionId: "s1", parentVersionId: "v1", structure: samplePlan(), createdAt: "2026-08-12T00:01:00Z" });
-    plans.upsert({ versionId: "v3", sessionId: "s1", parentVersionId: "v2", structure: samplePlan(), createdAt: "2026-08-12T00:02:00Z" });
-
-    const tree = plans.listBySession("s1");
-    expect(tree.map((v) => v.versionId)).toEqual(["v1", "v2", "v3"]);
-    expect(tree[2]?.parentVersionId).toBe("v2");
-
-    // 幂等覆盖：同 versionId 重写不产生重复节点
-    plans.upsert({ versionId: "v3", sessionId: "s1", parentVersionId: "v2", structure: samplePlan() });
-    expect(plans.listBySession("s1").length).toBe(3);
-
-    // structure 缺省 schemaVersion 时快照为 1；读取侧补齐前向迁移
-    expect(plans.get("v1")?.schemaVersion).toBe(1);
-    expect(plans.get("v1")?.structure.schemaVersion).toBe(1);
-
-    // 跨会话隔离
-    plans.upsert({ versionId: "other", sessionId: "s2", structure: samplePlan() });
-    expect(plans.listBySession("s1").length).toBe(3);
-    expect(plans.listBySession("s2").length).toBe(1);
-    h.close();
-  });
-
+describe("Repository：图像 / 费用", () => {
   it("image_version：ImageMeta 全量落库/读取，父链字段保留", () => {
     const h = openStorage(dbPath());
     const images = new ImageMetaRepository(h.db);
@@ -191,7 +153,7 @@ describe("Repository：版本树 / 图像 / 费用", () => {
     const rec = {
       sessionId: "s1",
       requestId: "req-1",
-      requestKind: "draftPlan",
+      requestKind: "chat",
       model: "mock-model",
       provider: "mock",
       promptTokens: 100,
@@ -228,17 +190,16 @@ describe("Repository：版本树 / 图像 / 费用", () => {
   it("持久化往返：close → 重开 → 全部数据可读（jsonl 之外的 meta.db 快照）", () => {
     const path = dbPath();
     const h = openStorage(path);
-    new PlanVersionRepository(h.db).upsert({ versionId: "v1", sessionId: "s1", structure: samplePlan() });
     new ImageMetaRepository(h.db).upsert({ imageId: "img1", sessionId: "s1", meta: { prompt: "p", model: "m", provider: "mock" } });
     new CostRepository(h.db).record({
-      sessionId: "s1", requestId: "req-1", requestKind: "draftPlan", model: "m", provider: "mock",
+      sessionId: "s1", requestId: "req-1", requestKind: "chat", model: "m", provider: "mock",
       promptTokens: 1, completionTokens: 1, totalTokens: 2, costUsd: 0.02, latencyMs: 5, ok: true,
       ts: "2026-08-12T00:00:00Z",
     });
     h.close();
 
     const h2 = openStorage(path);
-    expect(new PlanVersionRepository(h2.db).listBySession("s1").length).toBe(1);
+    expect(new CostRepository(h2.db).forSession("s1").length).toBe(1);
     expect(new ImageMetaRepository(h2.db).listBySession("s1").length).toBe(1);
     expect(new CostRepository(h2.db).totalCostUsd("s1")).toBeCloseTo(0.02);
     h2.close();

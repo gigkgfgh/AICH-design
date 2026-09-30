@@ -15,7 +15,6 @@ import type {
   SessionContent,
   SessionSummary,
   SseEventEnvelope,
-  StoragePlanRecord,
   UploadedImage,
 } from './preload-types.cjs';
 const bridge = {
@@ -56,7 +55,6 @@ const bridge = {
   readSession: (sessionId: string): Promise<SessionContent> => ipcRenderer.invoke('sessions:read', sessionId),
 
   /** R5：历史方案完整恢复（meta.db plan_version；不可用时返回 []，降级为引用级恢复） */
-  storagePlans: (sessionId: string): Promise<StoragePlanRecord[]> => ipcRenderer.invoke('storage:plans', sessionId),
 
   /**
    * G8 兜底：file:// 图像 → 主进程白名单读取转 dataURL（仅会话数据目录内，fail-closed）。

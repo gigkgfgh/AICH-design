@@ -12,7 +12,7 @@
  */
 import { safeStorage } from 'electron';
 import * as path from 'node:path';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 export const SECRETS_REFS = {
     llmApiKey: 'llm.apiKey',
     llmBaseUrl: 'llm.baseUrl',
@@ -100,7 +100,18 @@ export class SecretsService {
     }
     flush() {
         mkdirSync(path.dirname(this.filePath), { recursive: true });
-        writeFileSync(this.filePath, JSON.stringify(this.load(), null, 2), 'utf8');
+        // R7-2：原子写（temp + rename）——直接覆写在崩溃/断电时可写坏文件，
+        // 而 load() 对损坏文件静默按空库重建，下一次 flush 会把空库固化（配置丢失放大器）。
+        const tmp = `${this.filePath}.tmp-${process.pid}`;
+        writeFileSync(tmp, JSON.stringify(this.load(), null, 2), 'utf8');
+        try {
+            renameSync(tmp, this.filePath);
+        }
+        catch {
+            // rename 失败（跨设备/占用极罕见）→ 退回直接覆写
+            writeFileSync(this.filePath, JSON.stringify(this.load(), null, 2), 'utf8');
+            rmSync(tmp, { force: true });
+        }
     }
     /**
      * R6-14/R6-16：图像条目视图。旧单条目配置（image.apiKey/baseUrl/model）懒合成为首条目，
@@ -156,6 +167,8 @@ export class SecretsService {
                 baseUrl: m.baseUrl,
                 model: m.model,
                 thinking: normalizeThinking(m.thinking),
+                imageInput: m.imageInput !== false,
+                contextWindow: Number(m.contextWindow) > 0 ? Math.floor(Number(m.contextWindow)) : 0,
                 hasKey: (m.apiKeyEnc ?? '').length > 0,
             })),
             activeModelId: file.activeModelId ?? '',
@@ -199,6 +212,8 @@ export class SecretsService {
                 model: (e.model ?? '').trim(),
                 apiKeyEnc,
                 thinking: normalizeThinking(e.thinking),
+                imageInput: e.imageInput !== false,
+                contextWindow: Number(e.contextWindow) > 0 ? Math.floor(Number(e.contextWindow)) : undefined,
             };
         });
         file.activeModelId = file.models.some((m) => m.id === activeModelId) ? activeModelId : (file.models[0]?.id ?? '');
@@ -208,20 +223,27 @@ export class SecretsService {
     /** 读取注入用模型条目（含解密 Key；仅主进程 spawn 注入用）。 */
     modelsForInjection() {
         const file = this.load();
-        return (file.models ?? [])
-            .map((m) => {
+        // R7-2：条目被滤时打诊断日志（此前静默滤空 → 主进程误走旧单字段影子配置，症状似"没保存不能用"）。
+        const entries = (file.models ?? []).map((m) => {
             let apiKey = '';
             if (m.apiKeyEnc && m.apiKeyEnc.length > 0) {
                 try {
                     apiKey = safeStorage.decryptString(Buffer.from(m.apiKeyEnc, 'base64'));
                 }
-                catch {
+                catch (err) {
+                    process.stderr.write(`[secrets] 模型条目 ${m.id}（${m.name || m.model}）Key 解密失败：${err.message}\n`);
                     apiKey = '';
                 }
             }
-            return { id: m.id, name: m.name, baseUrl: m.baseUrl, model: m.model, apiKey, thinking: normalizeThinking(m.thinking) };
-        })
-            .filter((m) => m.baseUrl.length > 0 && m.model.length > 0 && m.apiKey.length > 0);
+            return { id: m.id, name: m.name, baseUrl: m.baseUrl, model: m.model, apiKey, thinking: normalizeThinking(m.thinking), imageInput: m.imageInput !== false, contextWindow: Number(m.contextWindow) > 0 ? Math.floor(Number(m.contextWindow)) : 0 };
+        });
+        for (const m of entries) {
+            if (m.baseUrl.length === 0 || m.model.length === 0 || m.apiKey.length === 0) {
+                process.stderr.write(`[secrets] 模型条目 ${m.id}（${m.name || m.model}）不满足注入条件：` +
+                    `${m.baseUrl.length === 0 ? '缺 baseUrl ' : ''}${m.model.length === 0 ? '缺 model ' : ''}${m.apiKey.length === 0 ? '缺 Key（未保存或解密失败）' : ''}\n`);
+            }
+        }
+        return entries.filter((m) => m.baseUrl.length > 0 && m.model.length > 0 && m.apiKey.length > 0);
     }
     activeModelId() {
         return this.load().activeModelId ?? '';

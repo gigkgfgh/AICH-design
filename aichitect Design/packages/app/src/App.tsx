@@ -1,19 +1,21 @@
 /**
- * App —— 三列工作台编排（R6-9）
- *
- * 布局：左 Sidebar（可拖宽/可收起，会话可删除）/ 中 ChatPanel / 右 PreviewPanel（可拖宽/可收起/可弹出）
- * 状态机：idle（侧栏 + 居中对话框）→ 首条消息后三列展开。
- * 意图分派：主 Agent 由 LLM 经 dispatch_agent 工具自主分派（useConversation），UI 显示分派徽标。
+ * App —— 三列工作台编排（R7-2）：
+ * - 标题栏统一开关：左上 = 左侧边栏开合；右上 = 图像画布开合（细竖线与窗口按钮分隔）；
+ * - 右栏 = 图像节点画布（单击放大/右键菜单/快捷键/拖拽引用）；Lightbox 统一放大预览；
+ * - 图像自动入画布：上传注册成功 / 对话生成 / 手动编辑产物（ImageEditorModal）均入画布；
+ * - 图生图在对话中进行，手动编辑为本地修改（保存为新版本，保留血缘）。
  */
 import { useCallback, useEffect, useRef, useState, type ReactElement, type MouseEvent as ReactMouseEvent } from 'react';
-import type { Attachment, SubAgentId } from './types/contracts';
+import Lightbox from 'yet-another-react-lightbox';
+import Zoom from 'yet-another-react-lightbox/plugins/zoom';
+import 'yet-another-react-lightbox/styles.css';
+import type { Attachment, ImageVersion, SubAgentId } from './types/contracts';
 import { ChatPanel } from './components/ChatPanel';
-import { PlanCanvas } from './components/PlanCanvas';
-import { VersionTree } from './components/VersionTree';
-import { ImageGallery } from './components/ImageGallery';
 import { Sidebar } from './components/Sidebar';
 import { PreviewPanel } from './components/PreviewPanel';
-import type { PreviewTab } from './components/PreviewPanel';
+import { resolveImageSrcs } from './components/SafeImage';
+import { ImageEditorModal } from './components/ImageEditorModal';
+import { TitlebarToggle } from './components/TitlebarToggle';
 import { SettingsModal } from './components/SettingsModal';
 import { WindowControls } from './components/WindowControls';
 import { useGateway } from './hooks/useGateway';
@@ -23,7 +25,6 @@ import { useConversation } from './hooks/useConversation';
 export function App(): ReactElement {
   const [sessionId, setSessionId] = useState<string>(() => newSessionId());
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [previewTab, setPreviewTab] = useState<PreviewTab>('plan');
   const [previewCollapsed, setPreviewCollapsed] = useState(false);
   const [previewPopped, setPreviewPopped] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -33,12 +34,17 @@ export function App(): ReactElement {
   const previewDragRef = useRef<{ startX: number; startW: number } | null>(null);
   const sidebarDragRef = useRef<{ startX: number; startW: number } | null>(null);
 
+  // R7-2：Lightbox 放大预览 + 图片编辑器（编辑对象与已解析 src）
+  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+  const [lightboxSrcs, setLightboxSrcs] = useState<Array<{ src: string }>>([]);
+  const [editing, setEditing] = useState<{ image: ImageVersion; src: string } | null>(null);
+
   const handlePreviewDragStart = useCallback((e: ReactMouseEvent) => {
     e.preventDefault();
     previewDragRef.current = { startX: e.clientX, startW: previewWidth };
     const onMove = (ev: MouseEvent): void => {
       if (!previewDragRef.current) return;
-      setPreviewWidth(Math.min(640, Math.max(320, previewDragRef.current.startW + (previewDragRef.current.startX - ev.clientX))));
+      setPreviewWidth(Math.min(720, Math.max(320, previewDragRef.current.startW + (previewDragRef.current.startX - ev.clientX))));
     };
     const onUp = (): void => {
       previewDragRef.current = null;
@@ -101,29 +107,28 @@ export function App(): ReactElement {
     (nextId: string) => {
       setSessionId(nextId);
       resetConv();
-      setPreviewTab('plan');
       setPreviewPopped(false);
       setAttachments([]);
       const bridge = window.aichBridge;
       if (bridge?.readSession) {
-        void Promise.all([
-          bridge.readSession(nextId).catch(() => null),
-          bridge.storagePlans ? bridge.storagePlans(nextId).catch(() => []) : Promise.resolve([]),
-        ]).then(([content, plans]) => {
-          if (content) restoreConv(content, plans ?? []);
-          // R6：重挂该会话在途请求
-          if (bridge.activeRuns && bridge.reattachRun) {
-            void bridge
-              .activeRuns()
-              .then((runs) => runs.filter((r) => r.sessionId === nextId))
-              .then((runs) => {
-                if (runs.length === 0) return;
-                void Promise.all(runs.map((r) => bridge.reattachRun!(r.requestId)));
-                conversation.reattachActive(runs.map(({ requestId, kind, prompt }) => ({ requestId, kind, prompt })));
-              })
-              .catch(() => undefined);
-          }
-        });
+        void bridge
+          .readSession(nextId)
+          .then((content) => {
+            if (content) restoreConv(content);
+            // R6：重挂该会话在途请求
+            if (bridge.activeRuns && bridge.reattachRun) {
+              void bridge
+                .activeRuns()
+                .then((runs) => runs.filter((r) => r.sessionId === nextId))
+                .then((runs) => {
+                  if (runs.length === 0) return;
+                  void Promise.all(runs.map((r) => bridge.reattachRun!(r.requestId)));
+                  conversation.reattachActive(runs.map(({ requestId, kind, prompt }) => ({ requestId, kind, prompt })));
+                })
+                .catch(() => undefined);
+            }
+          })
+          .catch(() => undefined);
       }
     },
     [resetConv, restoreConv, conversation],
@@ -152,34 +157,32 @@ export function App(): ReactElement {
       .catch(() => undefined);
   }, [settingsOpen]);
 
-  // working 进入时确保右栏可见（仅 idle→working 转场触发；不干预用户手动收起）
+  // working 进入时确保右栏可见（仅 idle→working 转场触发；不干预手动收起）
   const prevWorkingRef = useRef(false);
   useEffect(() => {
     if (working && !prevWorkingRef.current && previewCollapsed) setPreviewCollapsed(false);
     prevWorkingRef.current = working;
   }, [working, previewCollapsed]);
 
-  // 图像产出自动切 Tab
-  const lastImageCountRef = useRef(0);
-  useEffect(() => {
-    if (conversation.images.length > lastImageCountRef.current) {
-      setPreviewTab((tab) => (tab === 'versions' ? tab : 'images'));
-    }
-    lastImageCountRef.current = conversation.images.length;
-  }, [conversation.images.length]);
-
-  const locateVersion = useCallback(() => {
-    setPreviewCollapsed(false);
-    setPreviewTab('plan');
-  }, []);
-
+  /**
+   * R7-2：图片注册（/v1/images）成功后自动入画布——上传/粘贴/拖入的图像与对话生成同权展示。
+   * meta 口径与后端 /v1/images 一致（provider:'user'）。
+   */
   const registerImage = useCallback(
     (dataUrl: string, name: string): Promise<{ imageId: string; url: string } | null> => {
       const bridge = window.aichBridge;
       if (!bridge?.uploadImage) return Promise.resolve(null);
-      return bridge.uploadImage(sessionIdRef.current, dataUrl, name).catch(() => null);
+      return bridge
+        .uploadImage(sessionIdRef.current, dataUrl, name)
+        .then((res) => {
+          if (res) {
+            conversation.addRegisteredImage(res.imageId, res.url, { prompt: name || '用户上传参考图', status: 'succeeded' });
+          }
+          return res;
+        })
+        .catch(() => null);
     },
-    [],
+    [conversation],
   );
 
   const sendMessageWithOptions = useCallback(
@@ -190,13 +193,69 @@ export function App(): ReactElement {
     [conversation],
   );
 
+  /** R7-1：Lightbox 打开（解析 file:// → dataURL，保证 dev/prod 均可显示）。 */
+  const openLightbox = useCallback(
+    (target: ImageVersion) => {
+      const imgs = conversation.images;
+      const index = Math.max(0, imgs.findIndex((img) => img.imageId === target.imageId));
+      void resolveImageSrcs(imgs.map((img) => img.url)).then((map) => {
+        setLightboxSrcs(imgs.map((img) => ({ src: map.get(img.url) ?? img.url })));
+        setLightboxIndex(index);
+      });
+    },
+    [conversation.images],
+  );
+
+  /** R7-2：画布图 → 对话引用（解析为 dataURL 附件；imageId 保留参考图语义）。 */
+  const referenceImage = useCallback((image: ImageVersion) => {
+    void resolveImageSrcs([image.url]).then((map) => {
+      const url = map.get(image.url) ?? image.url;
+      setAttachments((prev) => [
+        ...prev,
+        {
+          id: `att-ref-${Date.now().toString(36)}`,
+          type: 'image',
+          name: image.meta.prompt?.slice(0, 24) || image.imageId,
+          imageId: image.imageId,
+          url,
+        },
+      ]);
+    });
+  }, []);
+
+  /** R7-2：打开编辑器（file:// 先解析为 dataURL）。 */
+  const openEditor = useCallback((image: ImageVersion) => {
+    void resolveImageSrcs([image.url]).then((map) => {
+      setEditing({ image, src: map.get(image.url) ?? image.url });
+    });
+  }, []);
+
+  /** 编辑保存 → 注册（新版本）→ 入画布；无 bridge 时直接以 dataURL 入画布。 */
+  const handleEditorSave = useCallback(
+    (dataUrl: string) => {
+      const source = editing?.image;
+      setEditing(null);
+      if (!source) return;
+      const meta = { prompt: '手动编辑', model: '本地编辑器', provider: 'local', parentImageId: source.imageId, status: 'succeeded' as const };
+      const bridge = window.aichBridge;
+      if (!bridge?.uploadImage) {
+        conversation.addRegisteredImage(`img_edit_${Date.now().toString(36)}`, dataUrl, meta);
+        return;
+      }
+      void bridge
+        .uploadImage(sessionIdRef.current, dataUrl, `编辑-${source.imageId}.png`)
+        .then((res) => {
+          if (res) conversation.addRegisteredImage(res.imageId, res.url, meta);
+          else conversation.addRegisteredImage(`img_edit_${Date.now().toString(36)}`, dataUrl, meta);
+        })
+        .catch(() => conversation.addRegisteredImage(`img_edit_${Date.now().toString(36)}`, dataUrl, meta));
+    },
+    [editing, conversation],
+  );
+
   const idle = !working;
 
-  const sidebarNode = sidebarCollapsed ? (
-    <button type="button" className="sidebar-rail" onClick={() => setSidebarCollapsed(false)} title="展开侧栏" aria-label="展开侧栏">
-      ▶
-    </button>
-  ) : (
+  const sidebarNode = sidebarCollapsed ? null : (
     <Sidebar
       sessions={sessions}
       currentSessionId={sessionId}
@@ -214,9 +273,7 @@ export function App(): ReactElement {
       messages={conversation.messages}
       streaming={conversation.streaming}
       onSend={sendMessageWithOptions}
-      versions={conversation.versions}
       variant={idle ? 'idle' : 'work'}
-      onLocateVersion={locateVersion}
       agent={agent}
       onAgentChange={setAgent}
       model={model}
@@ -231,8 +288,19 @@ export function App(): ReactElement {
       onLoadSkills={() => window.aichBridge?.listSkills?.().catch(() => []) ?? Promise.resolve([])}
       showThinking={uiPrefs.showThinking}
       showToolCalls={uiPrefs.showToolCalls}
+      usage={conversation.usage}
       onRetry={conversation.retry}
       onStop={conversation.stop}
+      onOpenImage={(src) => {
+        // 对话内图片 → 定位到会话图像数组中的同一图（附件/未注册图退化为仅显示该图）。
+        const idx = conversation.images.findIndex((img) => img.url === src);
+        if (idx >= 0) {
+          openLightbox(conversation.images[idx]!);
+          return;
+        }
+        setLightboxSrcs([{ src }]);
+        setLightboxIndex(0);
+      }}
     />
   );
 
@@ -246,16 +314,38 @@ export function App(): ReactElement {
     />
   );
 
-  // R6-14：无边框窗口——顶部自绘标题栏（drag 区 + 窗口按钮），下方业务行布局
+  // R6-14/R7-2：无边框窗口——标题栏（左上左栏开关 + 品牌 | 右上右栏开关 + 分隔线 + 窗口按钮）
   const titlebar = (
     <div className="titlebar">
+      <TitlebarToggle side="left" open={!sidebarCollapsed} onClick={() => setSidebarCollapsed((v) => !v)} />
       <div className="titlebar__brand">
         <span className="titlebar__mark" aria-hidden="true" />
         AICH Design
       </div>
       <div className="titlebar__spacer" />
-      <WindowControls />
+      <div className="titlebar__right">
+        {working && <TitlebarToggle side="right" open={!previewCollapsed} onClick={() => setPreviewCollapsed((v) => !v)} />}
+        {working && <div className="titlebar__divider" role="separator" />}
+        <WindowControls />
+      </div>
     </div>
+  );
+
+  const editorNode = editing ? (
+    <ImageEditorModal src={editing.src} name={editing.image.meta.prompt || editing.image.imageId} onClose={() => setEditing(null)} onSave={handleEditorSave} />
+  ) : null;
+
+  const lightbox = (
+    <Lightbox
+      // v3 为受控组件：不传 open 时组件恒不渲染（此前 index/srcs 已设但页面无任何 DOM 的根因）
+      open={lightboxIndex !== null}
+      slides={lightboxSrcs}
+      index={lightboxIndex ?? 0}
+      plugins={[Zoom]}
+      animation={{ zoom: 180 }}
+      on={{ view: ({ index }: { index: number }) => setLightboxIndex(index) }}
+      close={() => setLightboxIndex(null)}
+    />
   );
 
   // idle：侧栏（可收起/拖宽）+ 居中对话框
@@ -264,73 +354,58 @@ export function App(): ReactElement {
       <div className="app">
         {titlebar}
         <div className={`app__body app--idle ${sidebarCollapsed ? 'app--sidebar-collapsed' : ''}`}>
-          {sidebarCollapsed ? sidebarNode : <div className="sidebar-slot" style={{ width: sidebarWidth }} >{sidebarNode}</div>}
-          {!sidebarCollapsed && (
-            <div className="sidebar-resizer" onMouseDown={handleSidebarDragStart} role="separator" aria-label="拖拽调整侧栏宽度" />
+          {!sidebarCollapsed && sidebarNode && (
+            <>
+              <div className="sidebar-slot" style={{ width: sidebarWidth }} >{sidebarNode}</div>
+              <div className="sidebar-resizer" onMouseDown={handleSidebarDragStart} role="separator" aria-label="拖拽调整侧栏宽度" />
+            </>
           )}
           <main className="app__center">{chatNode}</main>
           {settingsOpen && settingsNode}
+          {editorNode}
+          {lightbox}
         </div>
       </div>
     );
   }
 
-  // working：三列（两侧均可拖宽/收起）
+  // working：三列（两侧均可拖宽/收起；收起开关在标题栏）
   return (
     <div className="app">
       {titlebar}
       <div className={`app__body app--work ${sidebarCollapsed ? 'app--sidebar-collapsed' : ''}`}>
-      {sidebarCollapsed ? sidebarNode : <div className="sidebar-slot" style={{ width: sidebarWidth }} >{sidebarNode}</div>}
-      {!sidebarCollapsed && (
-        <div className="sidebar-resizer" onMouseDown={handleSidebarDragStart} role="separator" aria-label="拖拽调整侧栏宽度" />
+      {!sidebarCollapsed && sidebarNode && (
+        <>
+          <div className="sidebar-slot" style={{ width: sidebarWidth }} >{sidebarNode}</div>
+          <div className="sidebar-resizer" onMouseDown={handleSidebarDragStart} role="separator" aria-label="拖拽调整侧栏宽度" />
+        </>
       )}
       <main className="app__center">{chatNode}</main>
       {!previewCollapsed && (
-        <div className="preview-resizer" onMouseDown={handlePreviewDragStart} role="separator" aria-label="拖拽调整预览面板宽度" />
+        <>
+          <div className="preview-resizer" onMouseDown={handlePreviewDragStart} role="separator" aria-label="拖拽调整画布宽度" />
+          <div className="preview-dock" style={{ width: previewWidth }}>
+            <PreviewPanel
+              poppedOut={previewPopped}
+              onTogglePopOut={() => setPreviewPopped((v) => !v)}
+              imageCount={conversation.images.length}
+              canvas={{
+                images: conversation.images,
+                loading: conversation.imageLoading,
+                error: conversation.imageError,
+              }}
+              onOpenImage={openLightbox}
+              onEditImage={openEditor}
+              onReferenceImage={referenceImage}
+              onRemoveImage={conversation.removeImage}
+              onDuplicateImage={conversation.duplicateImage}
+            />
+          </div>
+        </>
       )}
-      <div className="preview-dock" style={!previewCollapsed ? { width: previewWidth } : undefined}>
-      <PreviewPanel
-        activeTab={previewTab}
-        onTabChange={setPreviewTab}
-        collapsed={previewCollapsed}
-        onToggleCollapse={() => setPreviewCollapsed((v) => !v)}
-        poppedOut={previewPopped}
-        onTogglePopOut={() => setPreviewPopped((v) => !v)}
-        badges={{ images: conversation.images.length, versions: conversation.versions.length }}
-        planNode={
-          <PlanCanvas
-            plan={conversation.currentVersion?.plan ?? null}
-            svg={conversation.currentVersion?.svg ?? null}
-            selectedRoomId={conversation.selectedRoomId}
-            onSelectRoom={conversation.selectRoom}
-            onGenerateImage={conversation.generateImage}
-            imageGenerating={conversation.imageLoading}
-          />
-        }
-        imagesNode={
-          <ImageGallery
-            images={conversation.images}
-            currentImageId={conversation.currentImage?.imageId ?? null}
-            loading={conversation.imageLoading}
-            error={conversation.imageError}
-            onSelectImage={conversation.selectImage}
-            onEditImage={conversation.editImage}
-          />
-        }
-        versionsNode={
-          <VersionTree
-            versions={conversation.versions}
-            currentVersionId={conversation.currentVersionId}
-            onSelect={conversation.selectVersion}
-            images={conversation.images}
-            currentImageId={conversation.currentImage?.imageId ?? null}
-            onSelectImage={conversation.selectImage}
-            onRollbackToPlan={conversation.rollbackToPlanFromImage}
-          />
-        }
-      />
-      </div>
       {settingsOpen && settingsNode}
+      {editorNode}
+      {lightbox}
       </div>
     </div>
   );

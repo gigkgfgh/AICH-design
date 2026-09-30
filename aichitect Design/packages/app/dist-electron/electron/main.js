@@ -153,14 +153,20 @@ async function buildAgentServiceEnv() {
                 env.AICH_IMAGE_MODEL = model;
         }
         const llmKey = await secrets.readSecret(REFS.llmApiKey);
+        const secretsStatusHasModels = (secrets.status().models?.length ?? 0) > 0;
         const modelEntries = secrets.modelsForInjection();
         if (modelEntries.length > 0) {
             // R6-6：多模型注入（每条目独立 baseUrl/Key/thinking；agent-service 按条目建 provider）
             env.AICH_LLM_MODELS = JSON.stringify(modelEntries);
             env.AICH_LLM_ACTIVE_ID = secrets.activeModelId();
         }
+        else if (secretsStatusHasModels) {
+            // R7-2：条目存在但全部未通过注入校验 → 不回退旧单字段（残留的旧端点会成为"假接线"，
+            // 症状恰似"重启后必须重新保存才能用"）；宁走 mock 并明确告警。
+            process.stderr.write('[main] 模型条目存在但均未通过注入校验（见 [secrets] 诊断行），不回退旧单字段配置；请在 设置 → LLM 端点 重新保存\n');
+        }
         else if (llmKey) {
-            // 兼容回退：旧单模型配置（R5）
+            // 兼容回退：旧单模型配置（R5；仅在从未配置过多模型条目时生效）
             env.AICH_PROVIDER = 'openai-compatible';
             env.AICH_LLM_API_KEY_REF = llmKey;
             const baseUrl = await secrets.readSetting(REFS.llmBaseUrl);
@@ -269,6 +275,8 @@ function trySpawnAgentService(extraEnv) {
         const handshakeTimeout = setTimeout(() => {
             if (agentServiceStatus !== 'ready') {
                 agentServiceStatus = 'stub';
+                // R7-2：stub 原因可见（此前静默 kill，用户只见"没配置"，无从排查）
+                process.stderr.write('[main] agent-service 15s 握手超时 → stub（渲染层走 mock；可重启应用或检查 agent-service.log）\n');
                 child.kill();
             }
         }, 15000);
@@ -354,7 +362,6 @@ async function initStorage() {
         metaDb = storage.openStorage(dbPath);
         storageRepos = {
             db: metaDb.db,
-            plans: new storage.PlanVersionRepository(metaDb.db),
             images: new storage.ImageMetaRepository(metaDb.db),
         };
     }
@@ -364,7 +371,7 @@ async function initStorage() {
         process.stderr.write(`[storage] meta.db 初始化失败（不阻塞，仅不持久化）：${err.message}\n`);
     }
 }
-/** done 信封持久化（方案版本/图像元数据 → meta.db；无句柄时静默跳过）。 */
+/** done 信封持久化（图像元数据 → meta.db；无句柄时静默跳过）。 */
 function persistEnvelope(sessionId, envelope) {
     if (!storageRepos || envelope.type !== 'done')
         return;
@@ -372,15 +379,7 @@ function persistEnvelope(sessionId, envelope) {
     if (!data || typeof data !== 'object')
         return;
     try {
-        if (data['kind'] === 'plan') {
-            void storageRepos.plans.upsert({
-                versionId: String(data['versionId']),
-                sessionId,
-                structure: data['structure'],
-                svg: typeof data['svg'] === 'string' ? data['svg'] : null,
-            });
-        }
-        else if (data['kind'] === 'image') {
+        if (data['kind'] === 'image') {
             void storageRepos.images.upsert({
                 imageId: String(data['imageId']),
                 sessionId,
@@ -715,7 +714,6 @@ function registerIpcHandlers() {
                 title: '（新会话）',
                 messages: [],
                 images: [],
-                versionRefs: [],
             };
         }
         const stat = fs.statSync(file);
@@ -744,28 +742,6 @@ function registerIpcHandlers() {
             }
         }
         return { ok: true, removed };
-    });
-    // R5：历史方案完整恢复（meta.db plan_version → 结构+SVG；Electron≥35/node:sqlite 可用）
-    ipcMain.handle('storage:plans', (_e, sessionId) => {
-        if (!storageRepos) {
-            return Promise.resolve([]); // meta.db 不可用（旧 Electron）→ 降级为引用级恢复
-        }
-        if (!SESSION_ID_RE.test(sessionId)) {
-            return Promise.resolve([]);
-        }
-        try {
-            return Promise.resolve(storageRepos.plans.listBySession(sessionId).map((v) => ({
-                versionId: v.versionId,
-                parentVersionId: v.parentVersionId,
-                structure: v.structure,
-                svg: v.svg,
-                createdAt: v.createdAt,
-            })));
-        }
-        catch (err) {
-            process.stderr.write(`[storage] 读取方案版本失败：${err.message}\n`);
-            return Promise.resolve([]);
-        }
     });
     // ---- G8：file:// 图像兜底（白名单读取 → dataURL；dev http 源无法直接显示 file:// img） ----
     ipcMain.handle('image:readDataUrl', (_e, uri) => {

@@ -1,17 +1,15 @@
 /**
- * Repository 层（P017）：版本树 / 费用 / 图像元数据 / 会话元信息。
+ * Repository 层（P017）：费用 / 图像元数据 / 会话元信息。
+ * R7-1：PlanVersionRepository 随方案链路移除（plan_version 表由历史迁移保留，仅遗留数据清理用）。
  *
- * - plan_version 读取时经 shared/migratePlanStructure 前向迁移（ADR-005），
- *   schema_version 列为写入时快照（快查/审计用）；
  * - cost_summary 以 (session_id, request_id) 为主键：同 requestId 重试
  *   ON CONFLICT DO NOTHING，存储层保证 ADR-006「重试不重复计费」；
- * - 写入 plan_version / image_version 前自举 session 行（INSERT OR IGNORE），
+ * - 写入 image_version 前自举 session 行（INSERT OR IGNORE），
  *   满足外键约束，调用方无需保证写入顺序。
  */
 
 import type { DatabaseSync } from "node:sqlite";
-import type { ImageMeta, PlanStructure } from "@aichdesign/shared";
-import { migratePlanStructure } from "@aichdesign/shared";
+import type { ImageMeta } from "@aichdesign/shared";
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -64,91 +62,6 @@ export class SessionRepository {
       hardConstraints: hc == null ? null : (JSON.parse(String(hc)) as string[]),
     };
   }
-}
-
-/** 方案版本（版本树节点）。 */
-export interface PlanVersionRecord {
-  versionId: string;
-  sessionId: string;
-  parentVersionId: string | null;
-  structure: PlanStructure;
-  svg: string | null;
-  schemaVersion: number;
-  createdAt: string;
-}
-
-export interface PlanVersionUpsert {
-  versionId: string;
-  sessionId: string;
-  parentVersionId?: string | null;
-  structure: PlanStructure;
-  svg?: string | null;
-  createdAt?: string;
-}
-
-export class PlanVersionRepository {
-  constructor(private readonly db: DatabaseSync) {}
-
-  /** 写入/覆盖一个版本节点（同 versionId 幂等覆盖——重试落库不产生重复节点）。 */
-  upsert(rec: PlanVersionUpsert): PlanVersionRecord {
-    const createdAt = rec.createdAt ?? nowIso();
-    const schemaVersion = rec.structure.schemaVersion ?? 1;
-    new SessionRepository(this.db).touch(rec.sessionId);
-    this.db
-      .prepare(
-        "INSERT INTO plan_version (id, session_id, parent_version_id, structure, svg, schema_version, created_at) " +
-          "VALUES (?, ?, ?, ?, ?, ?, ?) " +
-          "ON CONFLICT(id) DO UPDATE SET parent_version_id = excluded.parent_version_id, " +
-          "structure = excluded.structure, svg = excluded.svg, schema_version = excluded.schema_version",
-      )
-      .run(
-        rec.versionId,
-        rec.sessionId,
-        rec.parentVersionId ?? null,
-        JSON.stringify(rec.structure),
-        rec.svg ?? null,
-        schemaVersion,
-        createdAt,
-      );
-    return this.get(rec.versionId)!;
-  }
-
-  /** 读取单个版本（structure 前向迁移到当前 PlanStructure 版本）。 */
-  get(versionId: string): PlanVersionRecord | null {
-    const row = this.db
-      .prepare(
-        "SELECT id, session_id, parent_version_id, structure, svg, schema_version, created_at " +
-          "FROM plan_version WHERE id = ?",
-      )
-      .get(versionId) as Record<string, unknown> | undefined;
-    return row ? planRowToRecord(row) : null;
-  }
-
-  /** 会话版本树（created_at 升序，同刻按写入序；版本树可查）。 */
-  listBySession(sessionId: string): PlanVersionRecord[] {
-    const rows = this.db
-      .prepare(
-        "SELECT id, session_id, parent_version_id, structure, svg, schema_version, created_at " +
-          "FROM plan_version WHERE session_id = ? ORDER BY created_at ASC, rowid ASC",
-      )
-      .all(sessionId) as Array<Record<string, unknown>>;
-    return rows.map(planRowToRecord);
-  }
-}
-
-function planRowToRecord(row: Record<string, unknown>): PlanVersionRecord {
-  const raw = JSON.parse(String(row["structure"])) as PlanStructure;
-  // migratePlanStructure 对已是当前版本的输入原样返回（不回填缺省号），此处统一补齐。
-  const structure = { ...migratePlanStructure(raw), schemaVersion: raw.schemaVersion ?? 1 };
-  return {
-    versionId: String(row["id"]),
-    sessionId: String(row["session_id"]),
-    parentVersionId: (row["parent_version_id"] as string | null) ?? null,
-    structure: migratePlanStructure(structure),
-    svg: (row["svg"] as string | null) ?? null,
-    schemaVersion: Number(row["schema_version"]),
-    createdAt: String(row["created_at"]),
-  };
 }
 
 /** 图像版本（ImageMeta 全量 JSON 落库，保留索引演进空间 ADR-005.4）。 */

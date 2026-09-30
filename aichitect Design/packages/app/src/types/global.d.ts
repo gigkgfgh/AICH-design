@@ -10,7 +10,6 @@ import type {
   SessionContent,
   SessionSummary,
   SseEventEnvelope,
-  StoragePlanRecord,
   UploadedImage,
 } from './contracts';
 
@@ -21,7 +20,6 @@ declare global {
     /** 发出 AgentRequest → { requestId }（runOptions 携带 agent/model/thinking） */
     runRequest(req: AgentRequest, runOptions?: RunOptions): Promise<{ requestId: string }>;
     /** R5：历史方案完整恢复（meta.db；不可用返回 []） */
-    storagePlans(sessionId: string): Promise<StoragePlanRecord[]>;
     /** R6：在途运行列表（刷新/切回后重连挂接） */
     activeRuns(): Promise<Array<{ requestId: string; sessionId: string; kind: string; prompt: string }>>;
     /** R6：重挂单个请求（终态回放） */

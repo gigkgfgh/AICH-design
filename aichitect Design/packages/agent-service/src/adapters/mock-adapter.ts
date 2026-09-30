@@ -2,11 +2,9 @@
  * MockAdapter：AgentRuntimePort 的零 pi 依赖兜底实现（依赖不可装 / AICH_ADAPTER=mock）。
  *
  * 行为与 PiAgentCoreAdapter 的 SSE 语义对齐：
- * - draftPlan → delta 提示 → 渲染工具（render_plan_svg 绑定）→ done(plan)；
- * - editPlan → delta 提示 → 修正工具（plan_patch 绑定）→ done(plan)；
  * - genImage → delta 提示 → image_generate 绑定 → ImageRegistry 落盘 → done(image)；
  * - editImage → delta 提示 → image_edit 绑定（参考图经 ImageRegistry resolve）→ done(image)；
- * - 其他 kind → delta + done(stream)；
+ * - chat / research → delta + done(stream)（mock 确定性文案）；
  * - 取消（外部 signal）→ error(REQUEST_CANCELLED)。
  * usage/cost 按 mock 常量计算并走同一 usageSink 管线（C-6）。
  */
@@ -14,18 +12,18 @@
 import type {
   AgentRuntimePort,
   AgentResponse,
-  PlanStructure,
   RunHandle,
   RunRequest,
   RunStatus,
   SseEventEnvelope,
 } from "@aichdesign/shared";
 import { ErrorCode, makeEnvelope } from "@aichdesign/shared";
-import { buildMockReply, isEditIntent, MOCK_MODEL_COST, pickMockPlan } from "@aichdesign/mock-provider";
+import type { SseUsageData } from "@aichdesign/shared";
+import { buildMockReply, MOCK_MODEL_COST } from "@aichdesign/mock-provider";
 import { AsyncQueue } from "../runtime/async-queue.js";
 import { JsonlSessionStore } from "../session/jsonl-store.js";
 import type { UsageRecord } from "../telemetry/usage-tracker.js";
-import { findBinding, newVersionId, promptOf, type ToolBinding } from "./common.js";
+import { findBinding, promptOf, type ToolBinding } from "./common.js";
 import type { ImageApiResult } from "./image-api.js";
 import type { ImageRegistry, RegisteredImage } from "../image/image-registry.js";
 
@@ -88,7 +86,6 @@ export class MockAdapter implements AgentRuntimePort {
     const queue = new AsyncQueue<SseEventEnvelope>();
     const startedAt = Date.now();
     const { requestId, sessionId, signal } = req;
-    const versionId = newVersionId();
     const userPrompt = promptOf(req.request);
     sessionStore?.append(sessionId, "user", { text: userPrompt, kind: req.request.kind }, requestId);
 
@@ -150,50 +147,15 @@ export class MockAdapter implements AgentRuntimePort {
           } else {
             final = { kind: "stream", delta: result.text };
           }
-        } else if (req.request.kind === "draftPlan" || req.request.kind === "editPlan") {
-          // 提示帧（模拟思考过程流式返回）。
-          const hint = req.request.kind === "draftPlan" ? "正在解析户型描述并生成方案…" : "正在应用修改指令…";
-          queue.push(makeEnvelope(requestId, sessionId, "delta", { delta: hint }));
-          await this.sleep(delayMs ?? 30, signal);
-          if (signal?.aborted) throwObject(ErrorCode.REQUEST_CANCELLED, "请求已取消");
-
-          // 执行对应工具绑定（render_plan_svg / plan_patch）。
-          const toolName =
-            req.request.kind === "draftPlan"
-              ? "render_plan_svg"
-              : isEditIntent(userPrompt) || req.request.kind === "editPlan"
-                ? "plan_patch"
-                : "render_plan_svg";
-          const binding = findBinding(tools, toolName);
-          if (!binding) {
-            throwObject(ErrorCode.RUNNER_ERROR, `mock 链路缺少工具绑定 ${toolName}`);
-          }
-          const params: Record<string, unknown> =
-            req.request.kind === "draftPlan"
-              ? { plan: pickMockPlan(userPrompt, 0) }
-              : { plan: pickMockPlan(userPrompt), patch: [{ op: "resize", roomId: "r1", factor: 1.1, reason: userPrompt }] };
-          const result = await binding.execute(params, signal);
-          if (signal?.aborted) throwObject(ErrorCode.REQUEST_CANCELLED, "请求已取消");
-          if (result.isError) {
-            throwObject(ErrorCode.RUNNER_ERROR, `mock 工具执行失败：${result.text}`);
-          }
-          const details = result.details as { svg?: string; structure?: PlanStructure } | undefined;
-          if (details?.svg && details.structure) {
-            final = { kind: "plan", svg: details.svg, structure: details.structure, versionId };
-          } else {
-            final = { kind: "stream", delta: result.text };
-          }
-        } else if (req.request.kind === "research") {
-          // R5：案例调研（mock 确定性文案；真实路径走 research 预设 + 检索工具）
-          queue.push(makeEnvelope(requestId, sessionId, "delta", { delta: "正在整理调研要点…" }));
+        } else if (req.request.kind === "research" || req.request.kind === "chat") {
+          // R5/R7-1：调研与通用对话（mock 确定性文案；真实路径走对应预设 + 工具）。
+          queue.push(makeEnvelope(requestId, sessionId, "delta", { delta: "正在整理回复…" }));
           await this.sleep(delayMs ?? 30, signal);
           if (signal?.aborted) throwObject(ErrorCode.REQUEST_CANCELLED, "请求已取消");
           const reply =
-            `【调研纪要（mock）】${userPrompt}\n\n` +
-            "1. 案例参考：小户型常以开放式厨房+客厅一体化提升采光与空间感；两室两厅典型面宽 10-12m、进深 8-10m。\n" +
-            "2. 规范要点：住宅设计规范要求卧室短期采光窗地比 ≥1/7；厨卫需独立通风。（模型知识，非实时信息）\n" +
-            "3. 启示：可在当前方案中优先保证主卧与客厅朝南，交通面积压缩至 8% 以内。\n\n" +
-            "（联网检索未启用：在「设置 → 联网检索」配置 SearXNG 后可获取实时案例与来源链接）";
+            req.request.kind === "research"
+              ? `【调研纪要（mock）】${userPrompt}\n\n1. 案例参考与规范要点建议以实时检索为准。\n\n（联网检索未启用：在「设置 → 联网检索」配置后可获取实时案例与来源链接）`
+              : buildMockReply(req.request).text;
           queue.push(makeEnvelope(requestId, sessionId, "delta", { delta: reply }));
           final = { kind: "stream", delta: reply };
         } else {
@@ -235,6 +197,17 @@ export class MockAdapter implements AgentRuntimePort {
       usageSink(rec);
       sessionStore?.append(sessionId, "usage", rec, requestId);
 
+      // R7-2：mock 合成用量（确定性近似值；真实链路为 API 实报值）。
+      const mockOutput = final.kind === "stream" ? final.delta.length : 128;
+      const mockUsage: SseUsageData = {
+        promptTokens: 1200 + Math.floor(userPrompt.length / 4),
+        completionTokens: mockOutput,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        totalTokens: 1200 + Math.floor(userPrompt.length / 4) + mockOutput,
+        context: { systemTokens: 320, toolTokens: 900, contextWindow: 128_000 },
+      };
+      queue.push(makeEnvelope(requestId, sessionId, "usage", mockUsage));
       if (final.kind === "error") {
         queue.push(makeEnvelope(requestId, sessionId, "error", { code: final.code, message: final.message }));
       } else {
@@ -244,7 +217,6 @@ export class MockAdapter implements AgentRuntimePort {
           "assistant",
           {
             kind: final.kind,
-            versionId: final.kind === "plan" ? final.versionId : undefined,
             text: final.kind === "stream" ? final.delta : undefined,
             imageId: final.kind === "image" ? final.imageId : undefined,
             url: final.kind === "image" ? final.url : undefined,

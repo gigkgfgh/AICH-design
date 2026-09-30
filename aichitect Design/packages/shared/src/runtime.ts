@@ -39,8 +39,8 @@ export interface ExtensionDef {
   tools: ToolDef[];
 }
 
-/** 子 agent id（R5：composer 左下选择 / 主 agent 自动路由）。 */
-export type SubAgentId = "main" | "plan-draft" | "image-gen" | "research";
+/** 子 agent id（R5：composer 左下选择 / 主 agent 自动路由；R7-1：plan-draft 移除）。 */
+export type SubAgentId = "main" | "image-gen" | "research";
 
 /**
  * 思考深度档位（R5）——采用 pi-ai 原生 ThinkingLevel 划分，信封透传不折算：

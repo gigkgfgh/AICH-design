@@ -2,7 +2,7 @@
   "name": "@aichdesign/mock-provider",
   "version": "0.1.0",
   "private": true,
-  "description": "AICH Design 共享 mock：mockPlanStructures 样例（2~3 个）、createMockChatStream（pi-ai 事件流协议）、零依赖对话回复生成（MockAdapter 兜底用）。M1 无网全链路与 frontend 并行依赖本包（评审 P1-5）",
+  "description": "AICH Design 共享 mock：createMockChatStream（pi-ai 事件流协议）、零依赖对话回复生成（MockAdapter 兜底用）。无网全链路与 frontend 并行依赖本包",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

@@ -9,24 +9,22 @@
  * - imageId → file:// URL 内存映射：供 image_edit 的 images[] 参考解析（回退/编辑链路）。
  *
  * 字段映射（§6.4 / ImageMeta 冻结结构）：
- * - refPlanVersionId → ImageMeta.parentVersionId（B-3 平面→表现图联动；当前 AgentRequest 无透传通道，
- *   README「已知边界」登记为空）；parentImageId / refImageId / maskId 直接映射同名字段。
+ * - parentImageId / refImageId / maskId 直接映射同名字段
+ *   （R7-1：refPlanVersionId 随方案链路移除；ImageMeta.parentVersionId 保留为冻结字段但不再写入）。
  */
 
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import type { ImageMeta } from "@aichdesign/shared";
 import { decodeBase64DataUrl } from "@aichdesign/extensions";
 import type { ImageApiResult } from "../adapters/image-api.js";
 import type { JsonlSessionStore } from "../session/jsonl-store.js";
 
-/** B-4 注册附加上下文（源自 AgentRequest 的父子版本/参考图/遮罩引用）。 */
+/** B-4 注册附加上下文（源自 AgentRequest 的父图/参考图/遮罩引用）。 */
 export interface ImageRegisterContext {
   /** 来源图像版本 id（editImage.imageId，B-4 版本树父节点）。 */
   parentImageId?: string;
-  /** 来源计划版本 id（B-3 平面→表现图；当前请求层无透传，暂为空并登记）。 */
-  refPlanVersionId?: string;
   /** 参考图 id（genImage.refImageId，落盘回填）。 */
   refImageId?: string;
   /** 编辑遮罩 id（editImage.maskId，落盘回填）。 */
@@ -42,6 +40,7 @@ export interface RegisteredImage {
 }
 
 export class ImageRegistry {
+  private readonly sessionsDir: string;
   private readonly imagesDir: string;
   private readonly byId = new Map<string, string>();
 
@@ -50,6 +49,7 @@ export class ImageRegistry {
     sessionsDir: string,
     private readonly sessionStore?: JsonlSessionStore | null,
   ) {
+    this.sessionsDir = sessionsDir;
     this.imagesDir = join(sessionsDir, "images");
   }
 
@@ -74,7 +74,6 @@ export class ImageRegistry {
 
     const meta: ImageMeta = {
       ...result.meta,
-      parentVersionId: context?.refPlanVersionId ?? result.meta.parentVersionId,
       parentImageId: context?.parentImageId ?? result.meta.parentImageId,
       refImageId: context?.refImageId ?? result.meta.refImageId,
       maskId: context?.maskId ?? result.meta.maskId,
@@ -97,5 +96,47 @@ export class ImageRegistry {
   /** imageId → 已注册 file:// URL（image_edit 参考解析用；未注册返回 undefined）。 */
   resolveUrl(imageId: string): string | undefined {
     return this.byId.get(imageId);
+  }
+
+  /**
+   * R7-1：从会话 jsonl 重建 imageId → file:// 映射（启动时调用一次）。
+   * 修复根因：byId 纯内存，服务重启（设置保存即重启）后全部 imageId 失效——
+   * analysisImages 组装与 image_edit 参考解析静默落空，图片"上传成功却读不到"。
+   * 只回填文件仍存在的条目；返回回填数量。
+   */
+  rehydrate(): number {
+    let entries: Array<import("node:fs").Dirent>;
+    try {
+      entries = readdirSync(this.sessionsDir, { withFileTypes: true });
+    } catch {
+      return 0;
+    }
+    let restored = 0;
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith(".jsonl")) continue;
+      let raw: string;
+      try {
+        raw = readFileSync(join(this.sessionsDir, entry.name), "utf8");
+      } catch {
+        continue;
+      }
+      for (const line of raw.split("\n")) {
+        const trimmed = line.trim();
+        if (trimmed === "") continue;
+        try {
+          const parsed = JSON.parse(trimmed) as { kind?: unknown; data?: unknown };
+          if (parsed.kind !== "image") continue;
+          const data = parsed.data as { imageId?: unknown; url?: unknown } | null;
+          if (typeof data?.imageId !== "string" || typeof data?.url !== "string") continue;
+          if (!data.url.startsWith("file://") || this.byId.has(data.imageId)) continue;
+          if (!existsSync(fileURLToPath(data.url))) continue;
+          this.byId.set(data.imageId, data.url);
+          restored += 1;
+        } catch {
+          // 损坏行跳过（与 JsonlSessionStore 容错一致）。
+        }
+      }
+    }
+    return restored;
   }
 }

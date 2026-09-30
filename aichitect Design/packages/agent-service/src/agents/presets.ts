@@ -24,7 +24,7 @@ export const AGENT_REGISTRATIONS: Readonly<Record<SubAgentId, AgentRegistration>
   main: {
     id: "main",
     name: "主 Agent",
-    description: "自动路由：按意图分派图像 / 方案 / 调研",
+    description: "自动路由：按意图分派图像 / 调研（R7-1：通用对话直接承接）",
   },
   "image-gen": {
     id: "image-gen",
@@ -37,12 +37,6 @@ export const AGENT_REGISTRATIONS: Readonly<Record<SubAgentId, AgentRegistration>
     name: "案例调研",
     description: "联网检索案例 / 规范 / 材料参考",
     skillName: "research",
-  },
-  "plan-draft": {
-    id: "plan-draft",
-    name: "方案起草",
-    description: "起草与修改平面方案（Beta）",
-    skillName: "plan-draft",
   },
 };
 

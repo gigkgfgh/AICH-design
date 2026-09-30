@@ -41,10 +41,9 @@ export function Dropdown(props: { label: ReactElement; children: (close: () => v
 /* ---------------- Agent 选择器 ---------------- */
 
 const AGENTS: Array<{ id: SubAgentId; icon: string; name: string; description: string; beta?: boolean }> = [
-  { id: 'main', icon: '✦', name: '主 Agent', description: '自动路由：按意图分派图像 / 方案 / 调研' },
+  { id: 'main', icon: '✦', name: '主 Agent', description: '通用对话；按意图自动分派图像 / 调研' },
   { id: 'image-gen', icon: '▣', name: '图像生成', description: '生成与编辑建筑表现图（首要功能）' },
   { id: 'research', icon: '◎', name: '案例调研', description: '联网检索案例 / 规范 / 材料参考' },
-  { id: 'plan-draft', icon: '◧', name: '方案起草', description: '起草与修改平面方案（SVG 版本树）', beta: true },
 ];
 
 export function AgentSelector(props: { value: SubAgentId; onChange: (v: SubAgentId) => void; disabled?: boolean }): ReactElement {
