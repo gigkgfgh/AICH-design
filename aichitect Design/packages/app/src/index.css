@@ -835,8 +835,14 @@ select {
 
 /* ---------------- Composer（一体化卡片：输入 + 工具条） ---------------- */
 
+/* composer 外层区（输入框 + 用量胶囊行）：统一承担底部边距——无 usage 时输入框距底 16px 与旧版一致，
+   有 usage 时胶囊行下方仍有 16px，不再贴窗口底边 */
+.chat-panel__composer-zone {
+  margin-bottom: 16px;
+}
+
 .chat-panel__composer {
-  margin: 0 20px 16px;
+  margin: 0 20px;
   border: 1px solid var(--border);
   border-radius: var(--radius-l);
   background: var(--bg-1);
@@ -2283,12 +2289,12 @@ button:focus-visible, a:focus-visible, .sidebar__session-btn:focus-visible { out
 
 /* ---------------- R7-2：用量指示器（DSH 风格胶囊 + 明细面板） ---------------- */
 
-/* 用量胶囊行：输入框圆角容器外的独立行（参考 DeepSeek 布局，居中） */
+/* 用量胶囊行：输入框圆角容器外的独立行（参考 DeepSeek 布局，居中；底部呼吸空间由 composer-zone 提供） */
 .usage-indicator {
   position: relative;
   display: flex;
   justify-content: center;
-  padding: 8px 0 2px;
+  padding: 8px 0 4px;
 }
 
 .usage-pills {

@@ -313,12 +313,13 @@ export function ChatPanel(props: ChatPanelProps): ReactElement {
     </div>
   );
 
-  // R7-2 反馈：用量胶囊在输入框容器外（下方独立行，参考 DeepSeek 布局），不随 composer 圆角容器
+  // R7-2 反馈：用量胶囊在输入框容器外（下方独立行，参考 DeepSeek 布局），不随 composer 圆角容器；
+  // 外层 zone 统一承担底部边距（胶囊行不再贴窗口底边）
   const composerBlock = (
-    <>
+    <div className="chat-panel__composer-zone">
       {composer}
       {props.usage && <UsageIndicator usage={props.usage} />}
-    </>
+    </div>
   );
 
   if (variant === 'idle') {
