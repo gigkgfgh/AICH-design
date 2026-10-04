@@ -129,9 +129,12 @@ export function parseSessionContent(sessionId: string, content: string): Session
     } else if (e.kind === 'image' && data) {
       const imageId = str(data['imageId']);
       const url = str(data['url']);
+      // 索引始终回填：对话消息（user.imageIds）的图片显示不随"移出画布"失效
       if (imageId && url) imageUrlById.set(imageId, url);
       const meta = asRecord(data['meta']) as ImageMeta | null;
-      if (imageId && url && meta) {
+      // canvasRemoved = 画布中已删除（仅移出画布；对话引用与磁盘文件保留）
+      const canvasRemoved = data['canvasRemoved'] === true;
+      if (imageId && url && meta && !canvasRemoved) {
         const ts = str(e.ts) ?? meta.createdAt ?? new Date(0).toISOString();
         images.push({
           imageId,

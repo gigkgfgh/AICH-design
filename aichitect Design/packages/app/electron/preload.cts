@@ -51,6 +51,10 @@ const bridge = {
   deleteSession: (sessionId: string): Promise<{ ok: boolean; removed: number }> =>
     ipcRenderer.invoke('sessions:delete', sessionId),
 
+  /** R7-2 反馈：画布删除 = 仅移出画布（jsonl image 条目打 canvasRemoved 标记；对话引用与文件不动） */
+  deleteSessionImage: (sessionId: string, imageId: string): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke('sessions:deleteImage', sessionId, imageId),
+
   /** 读取会话完整内容（消息流/图像/版本引用；bridge 模式有效） */
   readSession: (sessionId: string): Promise<SessionContent> => ipcRenderer.invoke('sessions:read', sessionId),
 

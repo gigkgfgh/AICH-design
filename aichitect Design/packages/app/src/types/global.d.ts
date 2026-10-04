@@ -69,6 +69,8 @@ declare global {
     listSessions(): Promise<SessionSummary[]>;
     /** R6-9：删除历史会话（jsonl + meta.db 级联） */
     deleteSession(sessionId: string): Promise<{ ok: boolean; removed: number }>;
+    /** R7-2 反馈：画布删除 = 仅移出画布（jsonl image 条目打 canvasRemoved 标记；对话引用与文件不动） */
+    deleteSessionImage?(sessionId: string, imageId: string): Promise<{ ok: boolean }>;
     /** 读取会话完整内容（消息/图像/版本引用） */
     readSession(sessionId: string): Promise<SessionContent>;
     /** G8 兜底：file:// 图像 → dataURL（主进程白名单读取；失败抛错） */

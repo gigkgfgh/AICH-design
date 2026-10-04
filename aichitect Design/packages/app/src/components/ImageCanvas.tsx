@@ -52,7 +52,7 @@ function ImageCard(props: NodeProps<ImageCardNode>): ReactElement {
   return (
     <div
       className={`image-node ${active ? 'is-active' : ''}`}
-      title="单击放大预览 · 拖动移动 · 右键更多操作"
+      title="双击放大预览 · 单击选中 · 拖动移动 · 右键更多操作"
       onKeyDown={(e) => {
         if (e.key === 'Enter') onOpen(image);
       }}
@@ -178,8 +178,14 @@ export function ImageCanvas(props: ImageCanvasProps): ReactElement {
     });
   }, []);
 
-  /** 单击放大（ReactFlow onNodeClick：与拖拽判定协同，微动点击可靠触发）。 */
-  const onNodeClick = useCallback(
+  /** 单击选中节点（放大预览改双击；右键菜单内仍可放大） */
+  const onNodeClick = useCallback((_event: React.MouseEvent, node: ImageCardNode) => {
+    activeIdRef.current = node.id;
+    setActiveId(node.id);
+  }, []);
+
+  /** 双击放大预览（ReactFlow onNodeDoubleClick，与拖拽判定协同） */
+  const onNodeDoubleClick = useCallback(
     (_event: React.MouseEvent, node: ImageCardNode) => {
       activeIdRef.current = node.id;
       setActiveId(node.id);
@@ -263,6 +269,7 @@ export function ImageCanvas(props: ImageCanvasProps): ReactElement {
         nodeTypes={nodeTypes}
         onNodesChange={onNodesChange}
         onNodeClick={onNodeClick}
+        onNodeDoubleClick={onNodeDoubleClick}
         onNodeContextMenu={onNodeContextMenu}
         // R7-2：v12 默认 0——按下与抬起间 ≥1px 移动即判定为拖拽并杀死 click（window 捕获层），
         // 单击放大因此失灵；放宽到 5px 恢复正常点击语义。

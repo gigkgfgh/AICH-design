@@ -37,6 +37,8 @@ export function App(): ReactElement {
   // R7-2：Lightbox 放大预览 + 图片编辑器（编辑对象与已解析 src）
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   const [lightboxSrcs, setLightboxSrcs] = useState<Array<{ src: string }>>([]);
+  /** 当前预览对应的会话图像 id（对话内未注册图的退化分支为 null → 不显示编辑入口） */
+  const [lightboxImageId, setLightboxImageId] = useState<string | null>(null);
   const [editing, setEditing] = useState<{ image: ImageVersion; src: string } | null>(null);
 
   const handlePreviewDragStart = useCallback((e: ReactMouseEvent) => {
@@ -185,6 +187,18 @@ export function App(): ReactElement {
     [conversation],
   );
 
+  /** R7-2 反馈：画布删除 = 真删除（会话 jsonl image 条目 + 磁盘文件；bridge 缺失退化为仅视图层）。
+   *  先视图层移除（即时反馈），持久化异步跟随——切换/恢复会话不再死而复生。 */
+  const removeCanvasImage = useCallback(
+    (imageId: string) => {
+      conversation.removeImage(imageId);
+      void window.aichBridge
+        ?.deleteSessionImage?.(sessionIdRef.current, imageId)
+        .catch(() => undefined);
+    },
+    [conversation],
+  );
+
   const sendMessageWithOptions = useCallback(
     (text: string, options?: Parameters<typeof conversation.sendMessage>[1]) => {
       conversation.sendMessage(text, options);
@@ -198,6 +212,7 @@ export function App(): ReactElement {
     (target: ImageVersion) => {
       const imgs = conversation.images;
       const index = Math.max(0, imgs.findIndex((img) => img.imageId === target.imageId));
+      setLightboxImageId(target.imageId);
       void resolveImageSrcs(imgs.map((img) => img.url)).then((map) => {
         setLightboxSrcs(imgs.map((img) => ({ src: map.get(img.url) ?? img.url })));
         setLightboxIndex(index);
@@ -298,6 +313,7 @@ export function App(): ReactElement {
           openLightbox(conversation.images[idx]!);
           return;
         }
+        setLightboxImageId(null);
         setLightboxSrcs([{ src }]);
         setLightboxIndex(0);
       }}
@@ -343,6 +359,41 @@ export function App(): ReactElement {
       index={lightboxIndex ?? 0}
       plugins={[Zoom]}
       animation={{ zoom: 180 }}
+      toolbar={{
+        buttons:
+          lightboxImageId !== null
+            ? [
+                <button
+                  key="aich-edit"
+                  type="button"
+                  className="yarl__button"
+                  title="编辑此图像"
+                  onClick={() => {
+                    const img = conversation.images.find((x) => x.imageId === lightboxImageId);
+                    setLightboxIndex(null);
+                    if (img) openEditor(img);
+                  }}
+                >
+                  <svg
+                    width="15"
+                    height="15"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    style={{ marginRight: 6, verticalAlign: '-2px' }}
+                    aria-hidden="true"
+                  >
+                    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+                  </svg>
+                  编辑
+                </button>,
+              ]
+            : [],
+      }}
       on={{ view: ({ index }: { index: number }) => setLightboxIndex(index) }}
       close={() => setLightboxIndex(null)}
     />
@@ -397,7 +448,7 @@ export function App(): ReactElement {
               onOpenImage={openLightbox}
               onEditImage={openEditor}
               onReferenceImage={referenceImage}
-              onRemoveImage={conversation.removeImage}
+              onRemoveImage={removeCanvasImage}
               onDuplicateImage={conversation.duplicateImage}
             />
           </div>

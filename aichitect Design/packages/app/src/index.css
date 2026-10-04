@@ -2637,41 +2637,112 @@ button:focus-visible, a:focus-visible, .sidebar__session-btn:focus-visible { out
 
 /* ---------------- R7-2：图片编辑器浮层 ---------------- */
 
-.editor-overlay {
+/* ---------------- R7-2 自研轻量编辑器（TASK-20261004：全屏无边框浮层） ---------------- */
+
+.editor-fullscreen {
+  position: fixed;
+  inset: 0;
   z-index: calc(var(--z-modal) + 5);
+  background: rgba(10, 10, 12, 0.88);
+  backdrop-filter: blur(10px);
+  animation: fade-in var(--dur-2) var(--ease-out, ease);
 }
 
-.editor-shell {
+.editor-stage {
   position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  width: min(1080px, 94vw);
-  height: min(760px, 90vh);
-  display: flex;
-  flex-direction: column;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-l);
-  background: var(--bg-1);
-  box-shadow: var(--shadow-3);
-  overflow: hidden;
-}
-
-.editor-shell__bar {
+  inset: 0;
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 8px 14px;
-  border-bottom: 1px solid var(--border);
+  justify-content: center;
 }
 
-.editor-shell__title {
+.editor-canvas-stage {
+  position: relative;
+  max-width: 94vw;
+  max-height: calc(100vh - 190px);
+  touch-action: none;
+}
+
+.editor-canvas {
+  display: block;
+}
+
+.editor-canvas--base {
+  width: 100%;
+  height: 100%;
+  box-shadow: var(--shadow-3);
+}
+
+.editor-canvas--overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+/* 裁切：选区盒（整体可拖动移动）+ 8 把手（向内收缩）；盒外压暗 + 三分网格 */
+.editor-crop-box {
+  position: absolute;
+  cursor: move;
+  touch-action: none;
+  border: 1px solid rgba(255, 255, 255, 0.9);
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.55);
+}
+
+.editor-crop-box::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(to right, transparent calc(33.33% - 0.5px), rgba(255, 255, 255, 0.35) calc(33.33% - 0.5px), rgba(255, 255, 255, 0.35) calc(33.33% + 0.5px), transparent calc(33.33% + 0.5px)),
+    linear-gradient(to right, transparent calc(66.66% - 0.5px), rgba(255, 255, 255, 0.35) calc(66.66% - 0.5px), rgba(255, 255, 255, 0.35) calc(66.66% + 0.5px), transparent calc(66.66% + 0.5px)),
+    linear-gradient(to bottom, transparent calc(33.33% - 0.5px), rgba(255, 255, 255, 0.35) calc(33.33% - 0.5px), rgba(255, 255, 255, 0.35) calc(33.33% + 0.5px), transparent calc(33.33% + 0.5px)),
+    linear-gradient(to bottom, transparent calc(66.66% - 0.5px), rgba(255, 255, 255, 0.35) calc(66.66% - 0.5px), rgba(255, 255, 255, 0.35) calc(66.66% + 0.5px), transparent calc(66.66% + 0.5px));
+}
+
+.editor-crop-handle {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #fff;
+  border: 2px solid rgba(0, 0, 0, 0.55);
+  box-sizing: border-box;
+  z-index: 2;
+}
+
+.editor-crop-handle--nw { left: -6px; top: -6px; cursor: nwse-resize; }
+.editor-crop-handle--n { left: calc(50% - 6px); top: -6px; cursor: ns-resize; }
+.editor-crop-handle--ne { left: calc(100% - 6px); top: -6px; cursor: nesw-resize; }
+.editor-crop-handle--e { left: calc(100% - 6px); top: calc(50% - 6px); cursor: ew-resize; }
+.editor-crop-handle--se { left: calc(100% - 6px); top: calc(100% - 6px); cursor: nwse-resize; }
+.editor-crop-handle--s { left: calc(50% - 6px); top: calc(100% - 6px); cursor: ns-resize; }
+.editor-crop-handle--sw { left: -6px; top: calc(100% - 6px); cursor: nesw-resize; }
+.editor-crop-handle--w { left: -6px; top: calc(50% - 6px); cursor: ew-resize; }
+
+/* 顶部条：模式徽标 + 名称 + 关闭 */
+.editor-topbar {
+  position: absolute;
+  top: 16px;
+  left: 20px;
+  right: 20px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.editor-mode-badge {
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.14);
   color: var(--text-0);
-  font-size: 13px;
-  font-weight: 600;
+  font-size: 12px;
 }
 
-.editor-shell__name {
+.editor-topbar__name {
   color: var(--text-2);
   font-size: 12px;
   overflow: hidden;
@@ -2679,25 +2750,244 @@ button:focus-visible, a:focus-visible, .sidebar__session-btn:focus-visible { out
   white-space: nowrap;
 }
 
-.editor-shell__close {
+.editor-icon-btn {
   margin-left: auto;
-  padding: 2px 10px;
-  border: none;
-  background: transparent;
-  color: var(--text-2);
-  font-size: 14px;
-  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.14);
   border-radius: var(--radius-s);
+  background: rgba(24, 24, 27, 0.9);
+  color: var(--text-0);
+  cursor: pointer;
 }
 
-.editor-shell__close:hover {
-  background: var(--bg-2, rgba(255, 255, 255, 0.08));
+.editor-icon-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+/* 裁切操作行（比例档位 + 应用/取消）：悬浮在工具栏上方 */
+.editor-crop-actions {
+  position: absolute;
+  bottom: 92px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  background: rgba(24, 24, 27, 0.92);
+  box-shadow: var(--shadow-3);
+}
+
+.editor-crop-actions__sep {
+  width: 1px;
+  height: 18px;
+  background: rgba(255, 255, 255, 0.12);
+  margin: 0 2px;
+}
+
+.editor-ratio-chip {
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-1);
+  font-size: 11px;
+  cursor: pointer;
+  transition: border-color var(--dur-1) ease, color var(--dur-1) ease, background var(--dur-1) ease;
+}
+
+.editor-ratio-chip:hover {
+  color: var(--text-0);
+  border-color: var(--text-2);
+}
+
+.editor-ratio-chip.is-active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.editor-ratio-chip--apply {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.editor-ratio-chip--apply:hover {
+  color: #fff;
+  filter: brightness(1.1);
+}
+
+/* 底部悬浮工具栏（圆角深色条，居中） */
+.editor-toolbar--floating {
+  position: absolute;
+  bottom: 28px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  max-width: 94vw;
+  padding: 8px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  background: rgba(24, 24, 27, 0.92);
+  box-shadow: var(--shadow-3);
+}
+
+.editor-tool-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.editor-tool-group:last-child,
+.editor-tool-group--end {
+  border-right: none;
+}
+
+.editor-tool-group--end {
+  margin-left: auto;
+  padding-right: 0;
+}
+
+.editor-tool-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-s);
+  background: transparent;
+  color: var(--text-1);
+  cursor: pointer;
+  transition: background var(--dur-1) ease, color var(--dur-1) ease, border-color var(--dur-1) ease;
+}
+
+.editor-tool-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
   color: var(--text-0);
 }
 
-.editor-shell__body {
-  flex: 1;
-  min-height: 0;
+.editor-tool-btn.is-active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.editor-tool-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.editor-color-picker {
+  display: inline-flex;
+  align-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-s);
+  cursor: pointer;
+}
+
+.editor-color-picker input[type='color'] {
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+}
+
+.editor-size-slider {
+  width: 110px;
+  accent-color: var(--accent);
+}
+
+.editor-size-label {
+  min-width: 34px;
+  color: var(--text-2);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.editor-text-input {
+  position: absolute;
+  min-width: 120px;
+  padding: 2px 6px;
+  border: 1px dashed var(--accent);
+  border-radius: var(--radius-s);
+  background: rgba(0, 0, 0, 0.75);
+  color: var(--text-0);
+  font-family: system-ui, sans-serif;
+  line-height: 1.2;
+}
+
+.editor-text-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* 浮动提示条（工具栏上方；与裁切操作行同位时被后者覆盖，用更高位置） */
+.editor-hint--floating {
+  position: absolute;
+  bottom: 92px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 6px 16px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.6);
+  color: var(--text-0);
+  font-size: 12px;
+  pointer-events: none;
+}
+
+.editor-crop-actions ~ .editor-hint--floating {
+  bottom: 140px;
+}
+
+.editor-btn {
+  padding: 5px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-s);
+  background: transparent;
+  color: var(--text-0);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background var(--dur-1) ease, border-color var(--dur-1) ease;
+}
+
+.editor-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.editor-btn--primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.editor-btn--primary:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+
+.editor-btn--secondary:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
 }
 
 /* ---------------- R7-2：设置高级设置折叠区 ---------------- */

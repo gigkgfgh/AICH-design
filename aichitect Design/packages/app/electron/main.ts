@@ -805,6 +805,50 @@ function registerIpcHandlers(): void {
     return { ok: true, removed };
   });
 
+  // R7-2 反馈：画布删除 = 仅移出画布——会话 jsonl 中该 image 条目打 canvasRemoved 标记（原位改写，
+  // 原子重写）；对话消息的图片引用（user.imageIds 回填）与磁盘文件一律不动，对话内容不受影响。
+  // 幂等：重复删除 / 未注册 id（画布复制件）无匹配行时静默成功。
+  ipcMain.handle(
+    'sessions:deleteImage',
+    (_e, sessionId: string, imageId: string): { ok: boolean } => {
+      if (typeof sessionId !== 'string' || !SESSION_ID_RE.test(sessionId)) {
+        throw new Error('非法 sessionId');
+      }
+      if (typeof imageId !== 'string' || !/^[A-Za-z0-9._-]{1,80}$/.test(imageId)) {
+        throw new Error('非法 imageId');
+      }
+      const file = sessionFile(sessionId);
+      if (!file || !fs.existsSync(file)) return { ok: true };
+      const stat = fs.statSync(file);
+      if (stat.size > SESSION_FILE_MAX_BYTES) {
+        throw new Error(`会话文件超过处理上限（${Math.floor(SESSION_FILE_MAX_BYTES / 1024 / 1024)}MB）`);
+      }
+      const lines = fs.readFileSync(file, 'utf-8').split('\n');
+      let changed = false;
+      const kept: string[] = [];
+      for (const line of lines) {
+        if (line.trim() === '') continue;
+        try {
+          const entry = JSON.parse(line) as { kind?: string; data?: Record<string, unknown> };
+          if (entry.kind === 'image' && entry.data?.imageId === imageId && entry.data.canvasRemoved !== true) {
+            kept.push(JSON.stringify({ ...entry, data: { ...entry.data, canvasRemoved: true } }));
+            changed = true;
+            continue;
+          }
+        } catch {
+          // 损坏行原样保留
+        }
+        kept.push(line);
+      }
+      if (changed) {
+        const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
+        fs.writeFileSync(tmp, kept.length > 0 ? `${kept.join('\n')}\n` : '', 'utf-8');
+        fs.renameSync(tmp, file);
+      }
+      return { ok: true };
+    },
+  );
+
   // ---- G8：file:// 图像兜底（白名单读取 → dataURL；dev http 源无法直接显示 file:// img） ----
   ipcMain.handle('image:readDataUrl', (_e, uri: string): string => {
     if (typeof uri !== 'string' || uri.length === 0) {

@@ -31,6 +31,8 @@ const bridge = {
     listSessions: () => electron_1.ipcRenderer.invoke('sessions:list'),
     /** R6-9：删除历史会话（jsonl + meta.db 级联） */
     deleteSession: (sessionId) => electron_1.ipcRenderer.invoke('sessions:delete', sessionId),
+    /** R7-2 反馈：画布删除 = 仅移出画布（jsonl image 条目打 canvasRemoved 标记；对话引用与文件不动） */
+    deleteSessionImage: (sessionId, imageId) => electron_1.ipcRenderer.invoke('sessions:deleteImage', sessionId, imageId),
     /** 读取会话完整内容（消息流/图像/版本引用；bridge 模式有效） */
     readSession: (sessionId) => electron_1.ipcRenderer.invoke('sessions:read', sessionId),
     /** R5：历史方案完整恢复（meta.db plan_version；不可用时返回 []，降级为引用级恢复） */

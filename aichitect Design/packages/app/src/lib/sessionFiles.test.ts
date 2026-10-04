@@ -88,6 +88,36 @@ describe('parseSessionContent', () => {
     expect(c2.messages[0]?.images).toBeUndefined();
   });
 
+  it('R7-2 反馈：canvasRemoved 图片只移出画布——对话引用回填保留', () => {
+    const imgLine = (id: string, removed: boolean) =>
+      JSON.stringify({
+        ts: '2026-08-24T01:00:00Z',
+        kind: 'image',
+        data: {
+          imageId: id,
+          url: `file:///D:/sessions/images/${id}.png`,
+          meta: { prompt: 'p', model: 'm', provider: 'user' },
+          ...(removed ? { canvasRemoved: true } : {}),
+        },
+      });
+    const userLine = JSON.stringify({
+      ts: '2026-08-24T01:00:01Z',
+      kind: 'user',
+      requestId: 'r1',
+      data: { text: '看这两张图', kind: 'chat', imageIds: ['img_a', 'img_b'] },
+    });
+    const content = [imgLine('img_a', true), imgLine('img_b', false), userLine].join('\n');
+    const c = parseSessionContent('s1', content);
+    // 画布：仅保留未删除的 img_b
+    expect(c.images.map((i) => i.imageId)).toEqual(['img_b']);
+    // 对话：两张图引用都回填（不受画布删除影响）
+    expect(c.messages.length).toBe(1);
+    expect(c.messages[0]?.images).toEqual([
+      'file:///D:/sessions/images/img_a.png',
+      'file:///D:/sessions/images/img_b.png',
+    ]);
+  });
+
   it('usage/error 行不进消息流', () => {
     const content = [USER_LINE('你好'), USAGE_LINE, '{broken'].join('\n');
     const c = parseSessionContent('s1', content);
