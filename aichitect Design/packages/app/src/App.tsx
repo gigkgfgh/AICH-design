@@ -268,6 +268,15 @@ export function App(): ReactElement {
     [editing, conversation],
   );
 
+  /**
+   * 网关不可用原因（分项报错）：已连接为 null，否则取主进程给出的具体原因，
+   * 缺失时退回兜底文案。断线不做离线兜底，UI 一律显式提示。
+   */
+  const gatewayErrorText =
+    status && status.gateway !== 'bridge'
+      ? status.error?.message ?? '本地网关未连接：对话与图像功能不可用，请在「设置」完成端点配置后重启本地服务。'
+      : null;
+
   const idle = !working;
 
   const sidebarNode = sidebarCollapsed ? null : (
@@ -304,6 +313,7 @@ export function App(): ReactElement {
       showThinking={uiPrefs.showThinking}
       showToolCalls={uiPrefs.showToolCalls}
       usage={conversation.usage}
+      gatewayError={gatewayErrorText}
       onRetry={conversation.retry}
       onStop={conversation.stop}
       onOpenImage={(src) => {

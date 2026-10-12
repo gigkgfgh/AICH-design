@@ -42,8 +42,10 @@ const SECTIONS: Array<{ id: SettingsSection; icon: string; label: string; descri
 function statusLabel(s: GatewayStatus | null): { text: string; ok: boolean } {
   if (!s) return { text: '探测中…', ok: false };
   if (s.gateway === 'bridge') return { text: `本地网关已连接（${s.gatewayUrl ?? ''}）`, ok: true };
-  if (s.agentService === 'stub') return { text: 'agent-service 握手失败（渲染层走 mock 直连）', ok: false };
-  return { text: 'agent-service 不可用（渲染层走 mock 直连）', ok: false };
+  // 分项报错：优先展示主进程给出的具体原因（未配置入口 / 握手超时 / 启动失败 / 进程退出 / 无 bridge）
+  if (s.error?.message) return { text: s.error.message, ok: false };
+  if (s.agentService === 'stub') return { text: 'agent-service 握手失败：对话与图像功能不可用', ok: false };
+  return { text: 'agent-service 不可用：对话与图像功能不可用', ok: false };
 }
 
 export function SettingsModal(props: SettingsModalProps): ReactElement {
@@ -132,7 +134,7 @@ export function SettingsModal(props: SettingsModalProps): ReactElement {
       </div>
       <div className="settings__row">
         <dt>会话数据目录</dt>
-        <dd className="settings__path">{status?.sessionsDir ?? '（mock 模式无本地数据目录）'}</dd>
+        <dd className="settings__path">{status?.sessionsDir ?? '（未连接本地网关，暂无数据目录）'}</dd>
       </div>
       <div className="settings__row">
         <dt>版本</dt>
@@ -193,7 +195,7 @@ export function SettingsModal(props: SettingsModalProps): ReactElement {
     <>
       <Notice forSection="search" />
       {noBridge ? (
-        <p className="settings__note">当前环境（浏览器直开/mock）不支持检索配置。</p>
+        <p className="settings__note">当前环境未连接本地网关，不支持检索配置。</p>
       ) : (
         <form className="settings__pane-form" onSubmit={(e) => void handleSaveSearch(e)}>
           <div className="settings__key-group">
@@ -264,7 +266,7 @@ export function SettingsModal(props: SettingsModalProps): ReactElement {
           ⟳ 重启本地服务
         </button>
       </div>
-      <p className="settings__path">{status?.skillsDir ?? '（mock 模式无技能目录）'}</p>
+      <p className="settings__path">{status?.skillsDir ?? '（未连接本地网关，暂无技能目录）'}</p>
       <Notice forSection="skills" />
     </div>
   );
@@ -360,7 +362,7 @@ export function SettingsModal(props: SettingsModalProps): ReactElement {
         <input type="checkbox" defaultChecked={localStorage.getItem('aich.loopLog') === '1'} onChange={(e) => { void window.aichBridge?.setLoopLogEnabled?.(e.target.checked); localStorage.setItem('aich.loopLog', e.target.checked ? '1' : '0'); }} />
         <span>记录完整 Agent Loops 上下文（每轮消息/工具调用/结果）</span>
       </label>
-      <p className="settings__path">{status?.logsDir ?? "（mock 模式无日志）"}</p>
+      <p className="settings__path">{status?.logsDir ?? "（未连接本地网关，暂无日志目录）"}</p>
     </div>
   );
 

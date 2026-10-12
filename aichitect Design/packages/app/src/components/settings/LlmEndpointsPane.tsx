@@ -101,7 +101,7 @@ export function LlmEndpointsPane({ secrets, noBridge, onSaved }: LlmEndpointsPan
   }
 
   if (noBridge) {
-    return <p className="settings__note">当前环境（浏览器直开/mock）不支持端点配置。</p>;
+    return <p className="settings__note">当前环境未连接本地网关（Electron bridge 缺失），不支持端点配置。</p>;
   }
 
   return (

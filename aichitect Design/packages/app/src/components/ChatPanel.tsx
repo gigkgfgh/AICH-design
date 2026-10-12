@@ -55,6 +55,11 @@ export interface ChatPanelProps {
   showToolCalls?: boolean;
   /** R7-2：模型用量聚合（无数据不渲染指示器） */
   usage?: SessionUsage | null;
+  /**
+   * 网关不可用原因（来自 GatewayStatus.error；null/undefined 表示已连接）。
+   * 断线时显式展示，不做任何离线兜底。
+   */
+  gatewayError?: string | null;
 }
 
 /** ZCode 风格可折叠区块（思考/工具调用的层级区分：小字、暗色、左侧竖线、chevron）。 */
@@ -89,6 +94,7 @@ const SUGGESTIONS = [
 
 export function ChatPanel(props: ChatPanelProps): ReactElement {
   const { messages, streaming, onSend, variant = 'work', onRetry, onStop } = props;
+  const gatewayError = props.gatewayError ?? null;
   const [input, setInput] = useState('');
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -260,6 +266,11 @@ export function ChatPanel(props: ChatPanelProps): ReactElement {
     <div
       className={`chat-panel__composer ${variant === 'idle' ? 'chat-panel__composer--hero' : ''} ${dragActive ? 'is-dragover' : ''}`}
     >
+      {gatewayError && (
+        <div className="chat-panel__ingest-error" role="alert">
+          <span>{gatewayError}</span>
+        </div>
+      )}
       {ingestError && (
         <div className="chat-panel__ingest-error" role="alert">
           <span>{ingestError}</span>

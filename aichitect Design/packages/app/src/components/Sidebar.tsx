@@ -36,13 +36,16 @@ function formatRelativeTime(iso: string): string {
 export function Sidebar(props: SidebarProps): ReactElement {
   const { sessions, currentSessionId, onNewSession, onSelectSession, gatewayStatus, onOpenSettings, onCollapse, onDeleteSession } = props;
   const online = gatewayStatus?.gateway === 'bridge';
+  const dotTitle = online
+    ? '本地网关已连接'
+    : gatewayStatus?.error?.message ?? '本地网关未连接：对话与图像功能不可用';
 
   return (
     <aside className="sidebar" aria-label="会话导航">
       <div className="sidebar__head">
         {/* R6-14：品牌移至自绘标题栏，此处仅保留网关状态与折叠按钮 */}
         <span className="sidebar__head-right">
-          <span className={`sidebar__dot ${online ? 'is-online' : ''}`} title={online ? '本地网关已连接' : 'mock 直连（agent-service 未就绪）'} />
+          <span className={`sidebar__dot ${online ? 'is-online' : ''}`} title={dotTitle} />
           {onCollapse && (
             <button type="button" className="sidebar__collapse" onClick={onCollapse} title="收起侧栏" aria-label="收起侧栏">
               ‹
