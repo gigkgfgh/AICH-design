@@ -6,11 +6,34 @@
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import { JsonlSessionStore } from "../src/session/jsonl-store.js";
 import { replayTranscript } from "../src/session/transcript-replay.js";
 import { ImageRegistry } from "../src/image/image-registry.js";
-import { MockImageProvider } from "../src/adapters/image-api.js";
+import type { ImageApiResult } from "../src/adapters/image-api.js";
+
+/** 最小合法 1x1 PNG dataURL（夹具用；不依赖任何出图端口实现）。 */
+const PNG_1X1 =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+/** 构造图像产物夹具（形状与 ImageApiPort 产物一致）。 */
+function fixtureImage(prompt: string): ImageApiResult {
+  return {
+    imageId: `img_${randomUUID()}`,
+    url: PNG_1X1,
+    format: "png",
+    meta: {
+      prompt,
+      model: "test-fixture",
+      provider: "test",
+      width: 1,
+      height: 1,
+      status: "succeeded",
+      createdAt: new Date().toISOString(),
+    },
+  };
+}
 
 const dirs: string[] = [];
 function makeTmpDir(): string {
@@ -46,9 +69,7 @@ describe("replayTranscript（R7-1 转录回放）", () => {
     const sessionsDir = join(dir, "sessions");
     const store = new JsonlSessionStore(sessionsDir);
     const registry = new ImageRegistry(sessionsDir, store);
-    const result = await new MockImageProvider().generate({
-      prompt: "参考图", size: "512x512", quality: "low", outputFormat: "png", n: 1,
-    });
+    const result = fixtureImage("参考图");
     const registered = registry.store("s1", result);
 
     store.append("s1", "user", { text: "看这张图", kind: "chat", imageIds: [registered.imageId, "img_missing"] }, "r1");
@@ -71,9 +92,7 @@ describe("ImageRegistry.rehydrate（R7-1 重启回填）", () => {
     const sessionsDir = join(dir, "sessions");
     const store = new JsonlSessionStore(sessionsDir);
     const first = new ImageRegistry(sessionsDir, store);
-    const result = await new MockImageProvider().generate({
-      prompt: "落盘图", size: "512x512", quality: "low", outputFormat: "png", n: 1,
-    });
+    const result = fixtureImage("落盘图");
     const registered = first.store("s-live", result);
     // 模拟另一条目文件已被清理：直接伪造 jsonl 行。
     store.append("s-live", "image", { imageId: "img_gone", url: "file:///" + join(sessionsDir, "images", "img_gone.png").replace(/\\/g, "/"), meta: {} });

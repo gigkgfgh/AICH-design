@@ -1,10 +1,8 @@
 /**
- * agent-service 运行配置（环境变量注入；真实 provider 密钥由主进程 KeyStore 注入，P016）。
+ * agent-service 运行配置（环境变量注入；真实 provider 密钥由主进程 SecretsService 注入）。
  */
 
 export interface AgentServiceConfig {
-  /** adapter 选择：auto（优先 pi-agent-core，失败降级 mock）/ pi / mock。默认 auto。 */
-  adapter: "auto" | "pi" | "mock";
   /** 监听主机，固定 127.0.0.1（修订①）。 */
   host: string;
   /** 端口；0 = 随机（修订①）。 */
@@ -13,23 +11,19 @@ export interface AgentServiceConfig {
   token: string | null;
   /** 会话 jsonl 目录；缺省 <cwd>/.data/sessions。 */
   sessionsDir: string;
-  /** LLM provider 配置（真实链路 P016 注入密钥后才启用；M1 默认 mock）。 */
+  /** LLM provider 配置（未配置时对话请求返回明确错误）。 */
   llm: {
-    provider: "mock" | "openai-compatible";
+    provider: "openai-compatible";
     baseURL: string | null;
     apiKeyRef: string | null;
     model: string | null;
   } | null;
-  /** mock 流式延迟（毫秒）。 */
-  mockDelayMs: number;
   /** P012 图像端口（§6.2：独立于 LLM，可指向任意 OpenAI 兼容端点）。 */
   image: {
     /** AICH_IMAGE_BASE_URL，默认 OpenAI 官方（https://api.openai.com/v1）。 */
     baseURL: string;
-    /** AICH_IMAGE_API_KEY（P016 KeyStore 前由环境注入；缺省自动 mock 降级）。 */
+    /** AICH_IMAGE_API_KEY。 */
     apiKey: string | null;
-    /** AICH_IMAGE_MOCK=1 强制 mock；与 Key 缺失自动降级同效。 */
-    mock: boolean;
     /** AICH_IMAGE_MODEL，默认 gpt-image-2（§6.2）。 */
     model: string;
     /** R6-14/R6-16：多图像条目（url=完整生成端点；editUrl=完整编辑端点可空；AICH_IMAGE_MODELS JSON，Key 明文仅进程内）。 */
@@ -82,15 +76,11 @@ function envNumber(name: string, fallback: number): number {
 }
 
 export function loadConfig(): AgentServiceConfig {
-  const rawAdapter = env("AICH_ADAPTER") ?? "auto";
-  const adapter: AgentServiceConfig["adapter"] =
-    rawAdapter === "pi" || rawAdapter === "mock" ? rawAdapter : "auto";
   const portRaw = env("AICH_PORT");
   const port = portRaw ? Number(portRaw) : 0;
 
   const llm = env("AICH_PROVIDER");
   return {
-    adapter,
     host: "127.0.0.1",
     port: Number.isFinite(port) && port >= 0 ? Math.floor(port) : 0,
     token: env("AICH_TOKEN"),
@@ -104,11 +94,9 @@ export function loadConfig(): AgentServiceConfig {
             model: env("AICH_LLM_MODEL"),
           }
         : null,
-    mockDelayMs: Number(env("AICH_MOCK_DELAY_MS") ?? "30"),
     image: {
       baseURL: env("AICH_IMAGE_BASE_URL") ?? "https://api.openai.com/v1",
       apiKey: env("AICH_IMAGE_API_KEY"),
-      mock: (env("AICH_IMAGE_MOCK") ?? "0") === "1",
       model: env("AICH_IMAGE_MODEL") ?? "gpt-image-2",
       models: (() => {
         // R6-14：与 llmModels 同构校验（字段齐备才收；坏 JSON 静默为空）。

@@ -2,7 +2,7 @@
   "name": "@aichdesign/agent-service",
   "version": "0.1.0",
   "private": true,
-  "description": "AICH Design Agent Service：独立 Node 进程，内嵌 pi-agent-core（AgentRuntimePort 适配）+ 本地网关（HTTP/SSE：POST /v1/run、GET /v1/stream/:requestId、POST /v1/cancel）+ 会话 jsonl + usage/cost 埋点；依赖不可装时降级 MockAdapter 全链路",
+  "description": "AICH Design Agent Service：独立 Node 进程，内嵌 pi-agent-core（AgentRuntimePort 适配）+ 本地网关（HTTP/SSE：POST /v1/run、GET /v1/stream/:requestId、POST /v1/cancel）+ 会话 jsonl + usage/cost 埋点；LLM/图像端点未配置时请求返回明确错误（fail-closed）",
   "type": "module",
   "main": "src/index.ts",
   "types": "src/index.ts",
@@ -23,11 +23,9 @@
   },
   "dependencies": {
     "@aichdesign/extensions": "*",
-    "@aichdesign/mock-provider": "*",
     "@aichdesign/shared": "*",
     "@earendil-works/pi-agent-core": "0.84.1",
-    "@earendil-works/pi-ai": "0.84.1",
-    "typebox": "1.3.7"
+    "@earendil-works/pi-ai": "0.84.1"
   },
   "devDependencies": {
     "@types/node": "^22.5.0",

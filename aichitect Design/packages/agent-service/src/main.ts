@@ -1,10 +1,10 @@
 /**
  * agent-service 入口（P006）：配置 → 组装工具绑定与 adapter → 启动本地网关 → 打印就绪信息。
  *
- * adapter 决策（降级路径）：
- * - AICH_ADAPTER=mock → MockAdapter（零 pi 依赖）；
- * - AICH_ADAPTER=pi 或 auto → 尝试动态加载 @earendil-works/pi-agent-core；
- *   安装失败（ENOTFOUND / 解析失败）→ 降级 MockAdapter 并打印告警（铁律 8）。
+ * adapter 决策：
+ * - 依赖缺失（@earendil-works/pi-agent-core 不可加载）→ fail-closed 拒绝启动（安装问题）；
+ * - 依赖可用但未配置 LLM 端点 → UnconfiguredAdapter：服务照常就绪，对话请求返回明确错误
+ *   （配置态，用户可在设置面板自助修复，不必重开应用）。
  *
  * 就绪输出（主进程 spawn 读取）：AICH_GATEWAY_READY {json}
  */
@@ -15,7 +15,6 @@ import * as nodePath from "node:path";
 import { pathToFileURL } from "node:url";
 import { loadConfig } from "./config.js";
 import { IMAGE_GENERATE_TOOL_DEF, IMAGE_EDIT_TOOL_DEF, validateImageGenerateParams, validateImageEditParams } from "@aichdesign/extensions";
-import { createMockChatStream, createMockModel } from "@aichdesign/mock-provider";
 import { JsonlSessionStore } from "./session/jsonl-store.js";
 import { UsageTracker } from "./telemetry/usage-tracker.js";
 import { RunManager } from "./runtime/run-manager.js";
@@ -25,7 +24,8 @@ import { SessionTokenManager } from "./gateway/session-tokens.js";
 import type { AgentRuntimePort } from "@aichdesign/shared";
 import type { ToolBinding } from "./adapters/common.js";
 import type { PiAgentCoreAdapterOptions } from "./adapters/pi-agent-core-adapter.js";
-import { MockImageProvider, OpenAiImageApi, type ImageApiPort } from "./adapters/image-api.js";
+import { OpenAiImageApi, UnconfiguredImagePort, type ImageApiPort } from "./adapters/image-api.js";
+import { UnconfiguredAdapter } from "./adapters/unconfigured-adapter.js";
 import { ImageRegistry } from "./image/image-registry.js";
 import { buildSearchToolBindings } from "./tools/search.js";
 import { buildDispatchToolBinding } from "./tools/dispatch.js";
@@ -35,7 +35,7 @@ import { AGENT_REGISTRATIONS } from "./agents/presets.js";
 
 /**
  * 组装图像工具绑定（image-tools extension，P012）：
- * 参数校验走 extensions 约束层（§6.2）；执行经 ImageApiPort（真实 OpenAI / MockImageProvider）。
+ * 参数校验走 extensions 约束层（§6.2）；执行经 ImageApiPort。
  * 绑定返回 { text, details: ImageApiResult, isError }——details 由 adapter 在工具执行成功后
  * 经 ImageRegistry 落盘并产生 SSE done image 载荷。
  */
@@ -82,50 +82,49 @@ export function buildImageToolBindings(port: ImageApiPort): ToolBinding[] {
 }
 
 /**
- * 图像端口决策（§6.2 与 AICH_ADAPTER 降级链同构；R6-14 多服务商）：
- * AICH_IMAGE_MOCK=1 强制 mock；否则按激活条目 → 任一有 Key 条目 → 旧单字段 → mock 选择。
+ * 图像端口决策（§6.2；R6-14 多服务商）。
+ *
+ * 选择顺序：激活条目 → 任一有 Key 条目 → 旧单字段 → **未配置（fail-closed 端口）**。
+ * 未配置时不抛错：服务照常就绪，仅出图请求返回明确错误——避免图像端点未配
+ * 连带对话能力不可用。
  */
 export function resolveImagePort(
   config: ReturnType<typeof loadConfig>,
   allowedLocalRoots?: string[],
 ): { port: ImageApiPort; label: string } {
   const { image } = config;
-  if (!image.mock) {
-    const pick =
-      image.models.find((m) => m.id === image.activeId && m.apiKey.length > 0) ??
-      image.models.find((m) => m.apiKey.length > 0);
-    if (pick) {
-      // R6-16：url/editUrl 为用户填写的完整端点，原样透传（零拼接）。
-      return {
-        port: new OpenAiImageApi({
-          generationsUrl: pick.url,
-          editsUrl: pick.editUrl || undefined,
-          apiKey: pick.apiKey,
-          model: pick.model,
-          allowedLocalRoots,
-        }),
-        label: `openai-image:${pick.model}`,
-      };
-    }
+  const pick =
+    image.models.find((m) => m.id === image.activeId && m.apiKey.length > 0) ??
+    image.models.find((m) => m.apiKey.length > 0);
+  if (pick) {
+    // R6-16：url/editUrl 为用户填写的完整端点，原样透传（零拼接）。
+    return {
+      port: new OpenAiImageApi({
+        generationsUrl: pick.url,
+        editsUrl: pick.editUrl || undefined,
+        apiKey: pick.apiKey,
+        model: pick.model,
+        allowedLocalRoots,
+      }),
+      label: `openai-image:${pick.model}`,
+    };
   }
-  if (image.mock || !image.apiKey) {
-    if (!image.apiKey && !image.mock) {
-      process.stderr.write("[warn] AICH_IMAGE_API_KEY 缺失，图像端口降级 MockImageProvider（离线兜底，§6.2）\n");
-    }
-    return { port: new MockImageProvider(), label: "mock-image" };
+  if (image.apiKey) {
+    // 旧单字段回退（遗留契约：AICH_IMAGE_BASE_URL 为 API Base）——按原行为折算完整端点。
+    const legacyBase = image.baseURL.replace(/\/+$/, "");
+    return {
+      port: new OpenAiImageApi({
+        generationsUrl: `${legacyBase}/v1/images/generations`,
+        editsUrl: `${legacyBase}/v1/images/edits`,
+        apiKey: image.apiKey,
+        model: image.model,
+        allowedLocalRoots,
+      }),
+      label: "openai-image",
+    };
   }
-  // 旧单字段回退（遗留契约：AICH_IMAGE_BASE_URL 为 API Base）——按原行为折算完整端点。
-  const legacyBase = image.baseURL.replace(/\/+$/, "");
-  return {
-    port: new OpenAiImageApi({
-      generationsUrl: `${legacyBase}/v1/images/generations`,
-      editsUrl: `${legacyBase}/v1/images/edits`,
-      apiKey: image.apiKey,
-      model: image.model,
-      allowedLocalRoots,
-    }),
-    label: "openai-image",
-  };
+  process.stderr.write("[warn] 图像端点未配置（无条目或无 API Key），出图请求将返回明确错误\n");
+  return { port: new UnconfiguredImagePort(), label: "unconfigured-image" };
 }
 
 /** 组装系统提示词（R6-2：通用建筑设计助手——领域专属约束下沉到各子 agent 预设；R6-3：外部技能 L1 注入）。 */
@@ -144,13 +143,11 @@ export function buildSystemPrompt(skills: ExternalSkill[] = []): string {
 }
 
 async function resolveAdapter(
-  preferred: "auto" | "pi" | "mock",
   context: {
     tools: ToolBinding[];
     usageTracker: UsageTracker;
     sessionStore: JsonlSessionStore;
     imageRegistry: ImageRegistry;
-    mockDelayMs: number;
     /** R5：真实 LLM 端点配置（旧单模型兼容）。 */
     llm?: ReturnType<typeof loadConfig>["llm"];
     /** R6-6：多模型条目。 */
@@ -165,140 +162,137 @@ async function resolveAdapter(
     maxToolCalls?: number;
   },
 ): Promise<{ adapter: AgentRuntimePort; label: string }> {
-  const { tools, usageTracker, sessionStore, imageRegistry, mockDelayMs, loopLogPath, maxToolCalls } = context;
+  const { tools, usageTracker, sessionStore, imageRegistry, loopLogPath, maxToolCalls } = context;
   // P018：同 requestId 仅保留最后一次记账（重试不重复计费，ADR-006）。
   const usageSink = (r: Parameters<UsageTracker["record"]>[0]) => usageTracker.recordOnce(r);
 
-  if (preferred !== "mock") {
-    try {
-      const pi = await import("@earendil-works/pi-agent-core");
-      const { PiAgentCoreAdapter } = await import("./adapters/pi-agent-core-adapter.js");
-      // R5：真实 LLM 接线——config.llm 齐备（设置面板已存 Key/BaseURL/模型）→ 真实流式；
-      // 否则维持 mock 模型（既有降级链）。
-      let model = createMockModel();
-      let streamFn: import("@earendil-works/pi-agent-core").StreamFn = createMockChatStream({
-        delayMs: mockDelayMs,
-        chunkSize: 6,
-      });
-      let getApiKey: PiAgentCoreAdapterOptions["getApiKey"] = undefined;
-      let buildModelOverride: PiAgentCoreAdapterOptions["buildModelOverride"] = undefined;
-      let defaultThinking: PiAgentCoreAdapterOptions["defaultThinking"] = undefined;
-      let label = `pi-agent-core@${pi.Agent ? "0.84.x" : ""}`;
-      // R6-6：多模型（AICH_LLM_MODELS 齐备）优先——每条目独立 provider（按条目 Key 鉴权）；
-      // 回退 R5 单模型（config.llm）；两者皆无 → mock。
-      const llmModels = context.llmModels ?? [];
-      const llmActiveId = context.llmActiveId ?? "";
-      if (llmModels.length > 0) {
-        const piAi = await import("@earendil-works/pi-ai");
-        const { openAICompletionsApi } = await import("@earendil-works/pi-ai/api/openai-completions.lazy");
-        const { buildLlmModel } = await import("./llm/model.js");
-        const modelsRegistry = piAi.createModels();
-        const keyByProvider = new Map<string, string>();
-        let firstModel: import("@earendil-works/pi-ai").Model<"openai-completions"> | null = null;
-        for (const entry of llmModels) {
-          const providerId = `aich-llm-${entry.id}`;
-          const m = buildLlmModel({ baseURL: entry.baseUrl, apiKeyRef: entry.apiKey, model: entry.model, imageInput: entry.imageInput, contextWindow: entry.contextWindow }, undefined, providerId);
-          if (!m) continue;
-          modelsRegistry.setProvider(
-            piAi.createProvider({
-              id: providerId,
-              baseUrl: m.baseUrl,
-              auth: { apiKey: { name: `AICH ${entry.name}`, resolve: async () => ({ auth: {} }) } },
-              models: [m],
-              api: openAICompletionsApi(),
-            }),
-          );
-          keyByProvider.set(providerId, entry.apiKey);
-          if (!firstModel || entry.id === llmActiveId) firstModel = entry.id === llmActiveId ? m : (firstModel ?? m);
-          if (entry.id === llmActiveId && ["low", "medium", "high", "xhigh", "max"].includes(entry.thinking)) {
-            defaultThinking = entry.thinking as import("@aichdesign/shared").ThinkingLevel;
-          }
-        }
-        if (firstModel) {
-          model = firstModel;
-          streamFn = modelsRegistry.streamSimple.bind(modelsRegistry) as import("@earendil-works/pi-agent-core").StreamFn;
-          getApiKey = (provider) => keyByProvider.get(provider);
-          const entries = llmModels;
-          buildModelOverride = (modelId: string) => {
-            const hit = entries.find((e) => e.model === modelId || e.id === modelId);
-            if (!hit) return buildLlmModel({ baseURL: entries[0]!.baseUrl, apiKeyRef: entries[0]!.apiKey, model: modelId, imageInput: entries[0]!.imageInput, contextWindow: entries[0]!.contextWindow }, undefined, `aich-llm-${entries[0]!.id}`)!;
-            return buildLlmModel({ baseURL: hit.baseUrl, apiKeyRef: hit.apiKey, model: hit.model, imageInput: hit.imageInput, contextWindow: hit.contextWindow }, undefined, `aich-llm-${hit.id}`)!;
-          };
-          label = `llm×${llmModels.length}:${firstModel.id}`;
-          process.stderr.write(`[agent-service] 多模型已接线 ${llmModels.map((e) => e.model).join("、")}（激活 ${firstModel.id}）\n`);
-        }
-      } else if (context.llm?.provider === "openai-compatible") {
-        const llm = context.llm;
-        const { buildLlmModel, LLM_PROVIDER_ID } = await import("./llm/model.js");
-        const realModel = buildLlmModel({
-          baseURL: llm.baseURL ?? "",
-          apiKeyRef: llm.apiKeyRef ?? "",
-          model: llm.model ?? "",
-        });
-        if (realModel) {
-          const piAi = await import("@earendil-works/pi-ai");
-          const { openAICompletionsApi } = await import("@earendil-works/pi-ai/api/openai-completions.lazy");
-          const provider = piAi.createProvider({
-            id: LLM_PROVIDER_ID,
-            baseUrl: realModel.baseUrl,
-            auth: { apiKey: { name: "AICH LLM", resolve: async () => ({ auth: {} }) } },
-            models: [realModel],
-            api: openAICompletionsApi(),
-          });
-          const models = piAi.createModels();
-          models.setProvider(provider);
-          model = realModel;
-          streamFn = models.streamSimple.bind(models) as import("@earendil-works/pi-agent-core").StreamFn;
-          const apiKey = llm.apiKeyRef ?? "";
-          getApiKey = () => apiKey;
-          const llmCfg = { baseURL: llm.baseURL ?? "", apiKeyRef: apiKey, model: llm.model ?? "" };
-          buildModelOverride = (id: string) => buildLlmModel(llmCfg, id)!;
-          label = `llm:${realModel.id}`;
-          process.stderr.write(`[agent-service] 真实 LLM 已接线 ${realModel.baseUrl} model=${realModel.id}\n`);
-        }
-      }
-      // R6-8：全部技能（内置+外部同机制）——统一列表注入 + read_skill 按需取全文（start() 已合并加载）。
-      const externalSkills: ExternalSkill[] = context.skills ?? [];
-      if (externalSkills.length > 0) {
-        process.stderr.write(`[agent-service] 技能已加载：${externalSkills.map((s) => s.name).join("、")}\n`);
-      }
-      const readSkillBinding = buildReadSkillBinding(externalSkills);
-      // R6-8：按注册表钉住技能（正文进系统提示、allowedTools 过滤工具）。
-      const registrations = Object.fromEntries(
-        Object.values(AGENT_REGISTRATIONS).map((reg) => {
-          const skill = reg.skillName ? externalSkills.find((sk) => sk.name === reg.skillName) : undefined;
-          return [reg.id, { ...reg, ...(skill ? { skillBody: skill.body, allowedTools: skill.allowedTools } : {}) }];
+  // 依赖不可加载 = 安装问题：fail-closed 拒绝启动（不静默降级）。
+  let pi: typeof import("@earendil-works/pi-agent-core");
+  try {
+    pi = await import("@earendil-works/pi-agent-core");
+  } catch (error) {
+    throw new Error(
+      `pi-agent-core 依赖不可用：${(error as Error).message}（请执行 npm install 安装 @earendil-works/pi-agent-core@0.84.1）`,
+    );
+  }
+  const { PiAgentCoreAdapter } = await import("./adapters/pi-agent-core-adapter.js");
+
+  // R5/R6-6：真实 LLM 接线——多模型（AICH_LLM_MODELS）优先，回退 R5 单模型（config.llm）。
+  // 两者皆无 → 未配置（服务仍就绪，对话请求返回明确错误）。
+  let model: NonNullable<PiAgentCoreAdapterOptions["model"]> | null = null;
+  let streamFn: NonNullable<PiAgentCoreAdapterOptions["streamFn"]> | null = null;
+  let getApiKey: PiAgentCoreAdapterOptions["getApiKey"] = undefined;
+  let buildModelOverride: PiAgentCoreAdapterOptions["buildModelOverride"] = undefined;
+  let defaultThinking: PiAgentCoreAdapterOptions["defaultThinking"] = undefined;
+  let label = `pi-agent-core@${pi.Agent ? "0.84.x" : ""}`;
+
+  const llmModels = context.llmModels ?? [];
+  const llmActiveId = context.llmActiveId ?? "";
+  if (llmModels.length > 0) {
+    const piAi = await import("@earendil-works/pi-ai");
+    const { openAICompletionsApi } = await import("@earendil-works/pi-ai/api/openai-completions.lazy");
+    const { buildLlmModel } = await import("./llm/model.js");
+    const modelsRegistry = piAi.createModels();
+    const keyByProvider = new Map<string, string>();
+    let firstModel: import("@earendil-works/pi-ai").Model<"openai-completions"> | null = null;
+    for (const entry of llmModels) {
+      const providerId = `aich-llm-${entry.id}`;
+      const m = buildLlmModel({ baseURL: entry.baseUrl, apiKeyRef: entry.apiKey, model: entry.model, imageInput: entry.imageInput, contextWindow: entry.contextWindow }, undefined, providerId);
+      if (!m) continue;
+      modelsRegistry.setProvider(
+        piAi.createProvider({
+          id: providerId,
+          baseUrl: m.baseUrl,
+          auth: { apiKey: { name: `AICH ${entry.name}`, resolve: async () => ({ auth: {} }) } },
+          models: [m],
+          api: openAICompletionsApi(),
         }),
       );
-      const adapter = new PiAgentCoreAdapter({
-        model,
-        streamFn,
-        getApiKey,
-        buildModelOverride,
-        systemPrompt: buildSystemPrompt(externalSkills),
-        registrations,
-        defaultThinking,
-        tools: readSkillBinding ? [...tools, readSkillBinding] : tools,
-        usageSink,
-        sessionStore,
-        imageRegistry,
-        // R6-12/R6-13：Loops 日志路径 + 工具调用轮次上限透传。
-        loopLogPath,
-        maxToolCalls,
-      });
-      return { adapter, label };
-    } catch (error) {
-      if (preferred === "pi") {
-        // 显式要求 pi 但不可用：fail-closed 拒绝启动（与沙箱策略一致的严格模式）。
-        throw new Error(`AICH_ADAPTER=pi 但 pi-agent-core 依赖不可用：${(error as Error).message}`);
+      keyByProvider.set(providerId, entry.apiKey);
+      if (!firstModel || entry.id === llmActiveId) firstModel = entry.id === llmActiveId ? m : (firstModel ?? m);
+      if (entry.id === llmActiveId && ["low", "medium", "high", "xhigh", "max"].includes(entry.thinking)) {
+        defaultThinking = entry.thinking as import("@aichdesign/shared").ThinkingLevel;
       }
-      process.stderr.write(`[warn] pi-agent-core 依赖不可用，降级 MockAdapter：${(error as Error).message}\n`);
+    }
+    if (firstModel) {
+      model = firstModel;
+      streamFn = modelsRegistry.streamSimple.bind(modelsRegistry) as NonNullable<PiAgentCoreAdapterOptions["streamFn"]>;
+      getApiKey = (provider) => keyByProvider.get(provider);
+      const entries = llmModels;
+      buildModelOverride = (modelId: string) => {
+        const hit = entries.find((e) => e.model === modelId || e.id === modelId);
+        if (!hit) return buildLlmModel({ baseURL: entries[0]!.baseUrl, apiKeyRef: entries[0]!.apiKey, model: modelId, imageInput: entries[0]!.imageInput, contextWindow: entries[0]!.contextWindow }, undefined, `aich-llm-${entries[0]!.id}`)!;
+        return buildLlmModel({ baseURL: hit.baseUrl, apiKeyRef: hit.apiKey, model: hit.model, imageInput: hit.imageInput, contextWindow: hit.contextWindow }, undefined, `aich-llm-${hit.id}`)!;
+      };
+      label = `llm×${llmModels.length}:${firstModel.id}`;
+      process.stderr.write(`[agent-service] 多模型已接线 ${llmModels.map((e) => e.model).join("、")}（激活 ${firstModel.id}）\n`);
+    }
+  } else if (context.llm?.provider === "openai-compatible") {
+    const llm = context.llm;
+    const { buildLlmModel, LLM_PROVIDER_ID } = await import("./llm/model.js");
+    const realModel = buildLlmModel({
+      baseURL: llm.baseURL ?? "",
+      apiKeyRef: llm.apiKeyRef ?? "",
+      model: llm.model ?? "",
+    });
+    if (realModel) {
+      const piAi = await import("@earendil-works/pi-ai");
+      const { openAICompletionsApi } = await import("@earendil-works/pi-ai/api/openai-completions.lazy");
+      const provider = piAi.createProvider({
+        id: LLM_PROVIDER_ID,
+        baseUrl: realModel.baseUrl,
+        auth: { apiKey: { name: "AICH LLM", resolve: async () => ({ auth: {} }) } },
+        models: [realModel],
+        api: openAICompletionsApi(),
+      });
+      const models = piAi.createModels();
+      models.setProvider(provider);
+      model = realModel;
+      streamFn = models.streamSimple.bind(models) as NonNullable<PiAgentCoreAdapterOptions["streamFn"]>;
+      const apiKey = llm.apiKeyRef ?? "";
+      getApiKey = () => apiKey;
+      const llmCfg = { baseURL: llm.baseURL ?? "", apiKeyRef: apiKey, model: llm.model ?? "" };
+      buildModelOverride = (id: string) => buildLlmModel(llmCfg, id)!;
+      label = `llm:${realModel.id}`;
+      process.stderr.write(`[agent-service] 真实 LLM 已接线 ${realModel.baseUrl} model=${realModel.id}\n`);
     }
   }
 
-  const { MockAdapter } = await import("./adapters/mock-adapter.js");
-  const adapter = new MockAdapter({ tools, usageSink, sessionStore, imageRegistry, delayMs: mockDelayMs });
-  return { adapter, label: "mock" };
+  if (!model || !streamFn) {
+    process.stderr.write("[warn] 未配置 LLM 端点（AICH_LLM_MODELS / AICH_PROVIDER），对话请求将返回明确错误\n");
+    return { adapter: new UnconfiguredAdapter(), label: "unconfigured" };
+  }
+
+  // R6-8：全部技能（内置+外部同机制）——统一列表注入 + read_skill 按需取全文（start() 已合并加载）。
+  const externalSkills: ExternalSkill[] = context.skills ?? [];
+  if (externalSkills.length > 0) {
+    process.stderr.write(`[agent-service] 技能已加载：${externalSkills.map((s) => s.name).join("、")}\n`);
+  }
+  const readSkillBinding = buildReadSkillBinding(externalSkills);
+  // R6-8：按注册表钉住技能（正文进系统提示、allowedTools 过滤工具）。
+  const registrations = Object.fromEntries(
+    Object.values(AGENT_REGISTRATIONS).map((reg) => {
+      const skill = reg.skillName ? externalSkills.find((sk) => sk.name === reg.skillName) : undefined;
+      return [reg.id, { ...reg, ...(skill ? { skillBody: skill.body, allowedTools: skill.allowedTools } : {}) }];
+    }),
+  );
+  const adapter = new PiAgentCoreAdapter({
+    model,
+    streamFn,
+    getApiKey,
+    buildModelOverride,
+    systemPrompt: buildSystemPrompt(externalSkills),
+    registrations,
+    defaultThinking,
+    tools: readSkillBinding ? [...tools, readSkillBinding] : tools,
+    usageSink,
+    sessionStore,
+    imageRegistry,
+    // R6-12/R6-13：Loops 日志路径 + 工具调用轮次上限透传。
+    loopLogPath,
+    maxToolCalls,
+  });
+  return { adapter, label };
 }
 
 export async function start(overrides: Partial<ReturnType<typeof loadConfig>> = {}): Promise<{
@@ -340,12 +334,11 @@ export async function start(overrides: Partial<ReturnType<typeof loadConfig>> = 
     ["image-gen", "research"],
   );
 
-  const { adapter, label } = await resolveAdapter(config.adapter, {
+  const { adapter, label } = await resolveAdapter({
     tools,
     usageTracker,
     sessionStore,
     imageRegistry,
-    mockDelayMs: config.mockDelayMs,
     llm: config.llm,
     llmModels: config.llmModels,
     llmActiveId: config.llmActiveId,

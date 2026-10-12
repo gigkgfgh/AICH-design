@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config.js";
-import { MockImageProvider, OpenAiImageApi } from "../src/adapters/image-api.js";
+import { OpenAiImageApi, UnconfiguredImagePort } from "../src/adapters/image-api.js";
 import { resolveImagePort } from "../src/main.js";
 
 function configWithEnv(env: Record<string, string | undefined>) {
@@ -59,12 +59,11 @@ describe("R6-16 config：AICH_IMAGE_MODELS 解析（url/editUrl）", () => {
 
 describe("R6-16 resolveImagePort 选择链（url/editUrl 原样透传）", () => {
   it("激活条目有 Key → 用激活条目构造 OpenAiImageApi", () => {
-    const cfg = configWithEnv({ AICH_IMAGE_MOCK: "0" });
+    const cfg = configWithEnv({});
     const config = {
       ...cfg,
       image: {
         ...cfg.image,
-        mock: false,
         apiKey: null,
         models: [
           { id: "img-a", name: "A", url: "https://a/v1/images/generations", editUrl: "", model: "m-a", apiKey: "sk-a" },
@@ -79,12 +78,11 @@ describe("R6-16 resolveImagePort 选择链（url/editUrl 原样透传）", () =>
   });
 
   it("激活条目无 Key → 回退任一有 Key 条目", () => {
-    const cfg = configWithEnv({ AICH_IMAGE_MOCK: "0" });
+    const cfg = configWithEnv({});
     const config = {
       ...cfg,
       image: {
         ...cfg.image,
-        mock: false,
         apiKey: null,
         models: [
           { id: "img-a", name: "A", url: "https://a/gen", editUrl: "", model: "m-a", apiKey: "" },
@@ -98,33 +96,42 @@ describe("R6-16 resolveImagePort 选择链（url/editUrl 原样透传）", () =>
     expect(label).toBe("openai-image:m-b");
   });
 
-  it("无条目回退旧单字段（按遗留契约折算完整端点）/ 全空降级 mock", () => {
-    const cfg = configWithEnv({ AICH_IMAGE_MOCK: "0" });
+  it("无条目回退旧单字段（按遗留契约折算完整端点）", () => {
+    const cfg = configWithEnv({});
     const legacy = {
       ...cfg,
-      image: { ...cfg.image, mock: false, apiKey: "sk-legacy", models: [], activeId: "" },
+      image: { ...cfg.image, apiKey: "sk-legacy", models: [], activeId: "" },
     };
     expect(resolveImagePort(legacy as never).label).toBe("openai-image");
-
-    const empty = {
-      ...cfg,
-      image: { ...cfg.image, mock: false, apiKey: null, models: [], activeId: "" },
-    };
-    expect(resolveImagePort(empty as never).port).toBeInstanceOf(MockImageProvider);
   });
 
-  it("AICH_IMAGE_MOCK=1 强制 mock（有条目也降级）", () => {
-    const cfg = configWithEnv({ AICH_IMAGE_MOCK: "1" });
+  it("全空（无条目且无 Key）→ 未配置端口：不抛错，出图时才报错", () => {
+    const cfg = configWithEnv({});
+    const empty = {
+      ...cfg,
+      image: { ...cfg.image, apiKey: null, models: [], activeId: "" },
+    };
+    const { port, label } = resolveImagePort(empty as never);
+    expect(port).toBeInstanceOf(UnconfiguredImagePort);
+    expect(label).toBe("unconfigured-image");
+  });
+
+  it("条目存在但都无 Key → 未配置端口（不静默出图）", async () => {
+    const cfg = configWithEnv({});
     const config = {
       ...cfg,
       image: {
         ...cfg.image,
-        mock: true,
-        models: [{ id: "img-a", name: "A", url: "https://a/gen", editUrl: "", model: "m-a", apiKey: "sk-a" }],
+        apiKey: null,
+        models: [{ id: "img-a", name: "A", url: "https://a/gen", editUrl: "", model: "m-a", apiKey: "" }],
         activeId: "img-a",
       },
     };
-    expect(resolveImagePort(config as never).port).toBeInstanceOf(MockImageProvider);
+    const { port } = resolveImagePort(config as never);
+    expect(port).toBeInstanceOf(UnconfiguredImagePort);
+    await expect(
+      port.generate({ prompt: "p", size: "1024x1024", quality: "medium", outputFormat: "png", n: 1 }),
+    ).rejects.toThrow(/图像端点未配置/);
   });
 });
 

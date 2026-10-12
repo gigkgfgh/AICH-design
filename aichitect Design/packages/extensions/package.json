@@ -2,7 +2,7 @@
   "name": "@aichdesign/extensions",
   "version": "0.1.0",
   "private": true,
-  "description": "AICH Design 产品 Extension：image-tools（image_generate / image_edit，P012）+ vitest 用例。零 pi 依赖：可被 MockAdapter 与 PiAgentCoreAdapter 共用",
+  "description": "AICH Design 产品 Extension：image-tools（image_generate / image_edit，P012）+ vitest 用例。零 pi 依赖：可被内核适配器共用",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -22,7 +22,6 @@
     "@aichdesign/shared": "*"
   },
   "devDependencies": {
-    "@aichdesign/mock-provider": "*",
     "@types/node": "^22.5.0",
     "typescript": "~5.6.2",
     "vitest": "^2.1.1"

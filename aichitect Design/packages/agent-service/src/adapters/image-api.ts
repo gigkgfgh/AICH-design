@@ -2,25 +2,24 @@
  * ImageApiPort：图像端口抽象（P012，§6.1/6.2）。
  *
  * 实现：
- * - MockImageProvider：确定性 PNG dataURL + mock cost（离线全链路，无 Key 兜底）；
  * - OpenAiImageApi：真实 OpenAI Image API（R6-16：用户在设置中填写**完整端点 URL**，
- *   本类原样使用、零拼接——生成 POST {generationsUrl}，编辑 POST {editsUrl}）。
+ *   本类原样使用、零拼接——生成 POST {generationsUrl}，编辑 POST {editsUrl}）；
+ * - UnconfiguredImagePort：端点未配置时的 fail-closed 端口（generate/edit 抛明确错误，
+ *   服务照常启动，仅出图失败——避免图像未配连带对话不可用）。
  *
  * 配置（独立于 LLM，§6.2 合规端点可配）：
  * - AICH_IMAGE_BASE_URL（默认 https://api.openai.com/v1）
  * - AICH_IMAGE_API_KEY
  * - AICH_IMAGE_MODEL（默认 gpt-image-2）
- * - AICH_IMAGE_MOCK=1 或 Key 缺失 → MockImageProvider（与 AICH_ADAPTER 降级链同构）
  *
  * 契约：工具返回 { text, details, isError }（details 为 ImageApiResult 形状，
  * adapter 在工具执行成功后经 ImageRegistry 落盘并产生 SSE done image 载荷）。
  */
 
-import { randomUUID, createHash } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve as pathResolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { deflateSync } from "node:zlib";
 import type { ImageMeta } from "@aichdesign/shared";
 import { ErrorCode } from "@aichdesign/shared";
 import type { ImageOutputFormat, ImageQuality, ImageSizePreset } from "@aichdesign/extensions";
@@ -63,160 +62,33 @@ export interface ImageApiPort {
   edit(params: ImageEditParams): Promise<ImageApiResult>;
 }
 
-/* ---------------- MockImageProvider（离线确定性 mock） ---------------- */
-
-export interface MockImageProviderOptions {
-  /** mock 模型 id（ImageMeta.model）。 */
-  modelId?: string;
-  /** 每百万像素成本（$），默认 0.04（演示口径，README 已登记）。 */
-  costPerMpUsd?: number;
-}
-
-/** mock 模型/提供者常量（ImageMeta 登记用）。 */
-export const MOCK_IMAGE_MODEL_ID = "mock-image-0.1";
-export const MOCK_IMAGE_PROVIDER = "mock-image";
-
 /** 从 size 预设解析像素宽高（预设天然满足 §6.2 尺寸约束）。 */
 export function parseSizePreset(size: ImageSizePreset): { width: number; height: number } {
   const [w, h] = size.split("x").map((v) => Number(v));
   return { width: w ?? 1024, height: h ?? 1024 };
 }
 
-/** 确定性 seed（同 prompt+size 同图，离线可复现）。 */
-export function imageSeed(...parts: (string | number)[]): number {
-  const hash = createHash("sha1").update(parts.join("|")).digest();
-  return hash[0]! * 0x1000000 + hash[1]! * 0x10000 + hash[2]! * 0x100 + hash[3]!;
-}
-
-const CRC_TABLE: Int32Array = (() => {
-  const table = new Int32Array(256);
-  for (let n = 0; n < 256; n += 1) {
-    let c = n;
-    for (let k = 0; k < 8; k += 1) {
-      c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-    }
-    table[n] = c;
-  }
-  return table;
-})();
-
-/** 自实现 CRC32（zlib.crc32 在部分 Node 版本签名差异；此处独立实现，无歧义）。 */
-function crc32Of(bytes: Uint8Array): number {
-  let crc = 0xffffffff;
-  for (let i = 0; i < bytes.length; i += 1) {
-    crc = CRC_TABLE[(crc ^ bytes[i]!) & 0xff]! ^ (crc >>> 8);
-  }
-  return (crc ^ 0xffffffff) >>> 0;
-}
-
-function pngChunk(type: string, data: Uint8Array): Buffer {
-  const typeBuf = Buffer.from(type, "ascii");
-  const len = Buffer.alloc(4);
-  len.writeUInt32BE(data.length);
-  const crcBuf = Buffer.alloc(4);
-  crcBuf.writeUInt32BE(crc32Of(Buffer.concat([typeBuf, Buffer.from(data)])));
-  return Buffer.concat([len, typeBuf, Buffer.from(data), crcBuf]);
-}
+/* ---------------- 未配置端口（fail-closed） ---------------- */
 
 /**
- * 编码 PNG（RGB，8bit，无 alpha）。纯色/渐变图 deflate 后体积可控，
- * 1024x1024 mock 图 dataURL 仅数 KB（可离线演示与落盘）。
+ * 图像端点未配置时的端口实现：generate / edit 一律抛明确错误。
+ *
+ * 服务仍照常启动并就绪——用户未配置图像端点不应连带对话能力不可用。
+ * 错误经工具绑定转成 { isError: true } 文本，前端走既有 imageError 链路展示。
  */
-export function encodePngRgb(width: number, height: number, pixelFn: (x: number, y: number) => [number, number, number]): Buffer {
-  const ihdr = Buffer.alloc(13);
-  ihdr.writeUInt32BE(width, 0);
-  ihdr.writeUInt32BE(height, 4);
-  ihdr[8] = 8; // bit depth
-  ihdr[9] = 2; // color type RGB
-  // raw: 每行 filter byte 0 + RGB 三通道。
-  const raw = Buffer.alloc(height * (1 + width * 3));
-  for (let y = 0; y < height; y += 1) {
-    const rowStart = y * (1 + width * 3);
-    raw[rowStart] = 0;
-    for (let x = 0; x < width; x += 1) {
-      const [r, g, b] = pixelFn(x, y);
-      const off = rowStart + 1 + x * 3;
-      raw[off] = r;
-      raw[off + 1] = g;
-      raw[off + 2] = b;
-    }
-  }
-  return Buffer.concat([
-    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
-    pngChunk("IHDR", ihdr),
-    pngChunk("IDAT", deflateSync(raw, { level: 6 })),
-    pngChunk("IEND", Buffer.alloc(0)),
-  ]);
-}
+export class UnconfiguredImagePort implements ImageApiPort {
+  readonly label = "unconfigured-image";
 
-/** 确定性 mock 图样：seed 决定配色（背景 + 对角色带），避免纯色块误导展示。 */
-export function createMockPngDataUrl(width: number, height: number, seed: number): string {
-  const hueShift = seed % 360;
-  const base = [hueShift % 256, (hueShift * 7) % 256, (hueShift * 13) % 256];
-  const buf = encodePngRgb(width, height, (x, y) => {
-    const band = ((x + y) / Math.max(1, (width + height) / 8)) % 1;
-    const accent = band > 0.75 ? 40 : band > 0.5 ? 20 : 0;
-    return [
-      Math.min(255, base[0]! + accent),
-      Math.min(255, base[1]! + accent),
-      Math.min(255, base[2]! + accent),
-    ];
-  });
-  return `data:image/png;base64,${buf.toString("base64")}`;
-}
-
-/**
- * MockImageProvider：确定性 PNG dataURL + mock cost。
- * 同参数同输出（可复现）；imageId 随机唯一（会话版本树可区分同 prompt 多次生成）。
- */
-export class MockImageProvider implements ImageApiPort {
-  readonly label = MOCK_IMAGE_PROVIDER;
-  private readonly options: Required<MockImageProviderOptions>;
-
-  constructor(options: MockImageProviderOptions = {}) {
-    this.options = { modelId: options.modelId ?? MOCK_IMAGE_MODEL_ID, costPerMpUsd: options.costPerMpUsd ?? 0.04 };
+  async generate(): Promise<ImageApiResult> {
+    throw new Error("图像端点未配置：请在「设置 → 图像端点」填写完整的生成 URL 与 API Key，保存后重启本地服务");
   }
 
-  async generate(params: ImageGenerateParams): Promise<ImageApiResult> {
-    const { width, height } = parseSizePreset(params.size);
-    const seed = imageSeed("generate", params.prompt, params.size, params.quality, params.outputFormat);
-    // mock 恒为 PNG dataURL（不模拟 jpeg/webp 编码；format 与实际字节一致，供 ImageRegistry 落盘扩展名）。
-    const url = createMockPngDataUrl(width, height, seed);
-    return this.toResult(url, params.prompt, width, height, "png", seed);
-  }
-
-  /** mock 编辑：不真正读参考图/遮罩（离线演示），按 prompt+size 生成确定性变体图。 */
-  async edit(params: ImageEditParams): Promise<ImageApiResult> {
-    const { width, height } = parseSizePreset(params.size);
-    const seed = imageSeed("edit", params.prompt, params.size, params.quality, params.outputFormat);
-    const url = createMockPngDataUrl(width, height, seed);
-    const meta = this.toResult(url, params.prompt, width, height, "png", seed).meta;
-    return {
-      imageId: `img_${randomUUID()}`,
-      url,
-      format: "png",
-      meta,
-    };
-  }
-
-  private toResult(url: string, prompt: string, width: number, height: number, format: ImageOutputFormat, seed: number): ImageApiResult {
-    const costUsd = ((width * height) / (1024 * 1024)) * this.options.costPerMpUsd;
-    const meta: ImageMeta = {
-      prompt,
-      model: this.options.modelId,
-      provider: MOCK_IMAGE_PROVIDER,
-      width,
-      height,
-      durationMs: 80 + (seed % 120),
-      costUsd,
-      status: "succeeded",
-      createdAt: new Date().toISOString(),
-    };
-    return { imageId: `img_${randomUUID()}`, url, format: format === "jpeg" ? "jpeg" : "png", meta };
+  async edit(): Promise<ImageApiResult> {
+    throw new Error("图像端点未配置：请在「设置 → 图像端点」填写完整的编辑 URL 与 API Key，保存后重启本地服务");
   }
 }
 
-/* ---------------- OpenAiImageApi（真实链路，联调点待 Key/网络） ---------------- */
+/* ---------------- OpenAiImageApi（真实链路） ---------------- */
 
 export interface OpenAiImageApiOptions {
   /** R6-16：图像生成完整端点 URL（原样使用，不做任何拼接/补全；通常以 /v1/images/generations 结尾）。 */

@@ -6,7 +6,7 @@
 
 export * from "./adapters/common.js";
 export { PiAgentCoreAdapter, RUN_IDLE_TIMEOUT_MS, RUN_TOTAL_TIMEOUT_MS } from "./adapters/pi-agent-core-adapter.js";
-export { MockAdapter } from "./adapters/mock-adapter.js";
+export { UnconfiguredAdapter, UNCONFIGURED_LLM_MESSAGE } from "./adapters/unconfigured-adapter.js";
 export { RunManager } from "./runtime/run-manager.js";
 export { AsyncQueue } from "./runtime/async-queue.js";
 export { JsonlSessionStore } from "./session/jsonl-store.js";
