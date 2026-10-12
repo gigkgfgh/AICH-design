@@ -282,7 +282,7 @@ describe("RetryingRuntime", () => {
       imageCostUsed: () => 999,
     });
     const response = await (
-      await runtime.run({ requestId: "r", sessionId: "s1", request: { kind: "draftPlan", sessionId: "s1", prompt: "两室一厅" } })
+      await runtime.run({ requestId: "r", sessionId: "s1", request: { kind: "chat", sessionId: "s1", prompt: "两室一厅" } })
     ).result;
     expect(response.kind).toBe("stream");
   });
@@ -395,9 +395,9 @@ describe("UsageTracker（P018 扩展）", () => {
     const tracker = new UsageTracker();
     tracker.record(rec("r1", 0.04, "genImage"));
     tracker.record(rec("r2", 0.04, "editImage"));
-    tracker.record(rec("r3", 0.01, "draftPlan"));
+    tracker.record(rec("r3", 0.01, "chat"));
     expect(tracker.costUsdByKinds(["genImage", "editImage"])).toBeCloseTo(0.08);
-    expect(tracker.costUsdByKinds(["draftPlan"])).toBeCloseTo(0.01);
+    expect(tracker.costUsdByKinds(["chat"])).toBeCloseTo(0.01);
     expect(DEFAULT_IMAGE_REQUEST_ESTIMATE_USD).toBe(0.04);
   });
 });

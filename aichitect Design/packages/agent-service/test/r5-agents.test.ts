@@ -8,7 +8,6 @@ import type { AgentRuntimePort, RunHandle, RunRequest } from "@aichdesign/shared
 import { makeEnvelope } from "@aichdesign/shared";
 import { buildLlmModel, LLM_PROVIDER_ID } from "../src/llm/model.js";
 import { assertPublicHttpUrl, htmlToText } from "../src/tools/search.js";
-import { AGENT_PRESETS, systemPromptForAgent } from "../src/agents/presets.js";
 import { RunManager } from "../src/runtime/run-manager.js";
 import { UsageTracker } from "../src/telemetry/usage-tracker.js";
 import { createHttpGateway } from "../src/gateway/http-server.js";

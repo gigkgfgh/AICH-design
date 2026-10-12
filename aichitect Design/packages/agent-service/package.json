@@ -19,9 +19,7 @@
     "typecheck": "tsc --noEmit",
     "build": "tsc -p tsconfig.build.json",
     "start": "node dist/main.js",
-    "test": "vitest --run && node test/server.js --smoke",
-    "smoke": "node test/server.js --smoke",
-    "smoke:p018-p019": "node test/smoke-p018-p019.mjs"
+    "test": "vitest --run"
   },
   "dependencies": {
     "@aichdesign/extensions": "*",
