@@ -60,7 +60,7 @@ describe("replayTranscript（R7-1 转录回放）", () => {
     expect(messages).toHaveLength(3);
     expect(messages[0]).toMatchObject({ role: "user", content: "第一轮问题" });
     expect(messages[1]).toMatchObject({ role: "assistant" });
-    expect((messages[1].content as Array<{ text: string }>)[0]?.text).toBe("第一轮回答");
+    expect((messages[1]!.content as Array<{ text: string }>)[0]?.text).toBe("第一轮回答");
     expect(messages[2]).toMatchObject({ role: "user", content: "第二轮问题" });
   });
 

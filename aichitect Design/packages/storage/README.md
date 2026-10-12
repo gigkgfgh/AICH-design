@@ -7,7 +7,6 @@ P017 存储包：`node:sqlite`（Node ≥22.5 内置 `DatabaseSync`，当前锁�
 - **打开流程**（`src/storage.ts` `openStorage(dbPath)`）：旧库存在待应用迁移 → 先备份
   `<db>.bak-<ts>` → WAL/foreign_keys/busy_timeout PRAGMA → 迁移 → 句柄。
 - **Repository**（`src/repositories.ts`）：
-  - `PlanVersionRepository`：方案版本树 upsert/按会话查询（读取侧经 `migratePlanStructure` 前向迁移，ADR-005）；
   - `ImageMetaRepository`：ImageMeta 全量 JSON 落库（ADR-005.4 索引演进空间）；
   - `CostRepository`：`(session_id, request_id)` 主键幂等记账——同 requestId 重试不重复计费（ADR-006）；
   - `SessionRepository`：会话行自举 + P019 摘要/硬约束元数据回写。

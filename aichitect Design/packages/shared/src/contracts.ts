@@ -55,7 +55,7 @@ export interface ImageMeta {
   height?: number;
   /** 耗时（毫秒）。 */
   durationMs?: number;
-  /** 成本（美元）；无成本信息的 mock 场景可缺省。 */
+  /** 成本（美元）；无成本信息时可缺省。 */
   costUsd?: number;
   /** 任务终态（ADR-006 UI 状态映射）。 */
   status?: "queued" | "running" | "succeeded" | "failed" | "cancelled";

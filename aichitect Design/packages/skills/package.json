@@ -5,11 +5,6 @@
   "description": "AICH Design 产品 Skill 包：image-gen / research（SKILL.md 遵循 Anthropic Agent Skills 开放标准 §4.1；R7-1：plan-draft 随方案链路移除）",
   "type": "module",
   "files": ["image-gen", "research"],
-  "exports": {
-    "./plan-draft/SKILL.md": "./plan-draft/SKILL.md",
-    "./plan-draft/references/schema.json": "./plan-draft/references/schema.json",
-    "./plan-draft/references/render-spec.md": "./plan-draft/references/render-spec.md"
-  },
   "scripts": {
     "test": "echo \"skills: frontmatter 合规与渐进披露注入由 reviewer 审查（P009 验收）\""
   }

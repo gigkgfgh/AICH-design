@@ -48,7 +48,7 @@ export interface TaskQueueOptions {
   imageCostLimitUsd?: number;
   /** 已用图像成本查询（P018 接 UsageTracker.costUsdByKinds）。 */
   imageCostUsed?: () => number;
-  /** 单次图像请求成本预估（美元）；默认 mock 口径 0.04（1024x1024 ≈ 1MP × $0.04/MP）。 */
+  /** 单次图像请求成本预估（美元）；默认 0.04（1024x1024 ≈ 1MP × $0.04/MP）。 */
   imageRequestEstimateUsd?: number;
 }
 

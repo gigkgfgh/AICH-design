@@ -6,7 +6,7 @@
  * - 错误响应结构固定为 { code, message, data }（HTTP JSON 响应与 SSE error 载荷同构）；
  * - 新增错误码必须在本表登记并写入交接文档「依赖信息」。
  *
- * 唯一权威声明（2026-08-12 R1-REV 裁决，R001）：本表 10 码为全产品唯一错误码权威，
+ * 唯一权威声明（2026-08-12 R1-REV 裁决，R001）：本表 9 码为全产品唯一错误码权威，
  * HTTP 映射以 httpStatusFor() 为准。早期 P000 阶段 7 码草案（ERR_AUTH / ERR_INVALID /
  * ERR_NOT_FOUND / ERR_CONFLICT / ERR_CANCELLED / ERR_RUNNER / ERR_INTERNAL）作废不落地；
  * frontend toHttpError 须对齐本表（禁散用字面量），SSE 错误信封 code 字段亦取本表值。

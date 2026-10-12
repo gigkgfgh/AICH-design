@@ -1,8 +1,8 @@
 /**
  * usage/cost 埋点（C-6 自 M1 起步；P023 指标仪表聚合读取）。
  *
- * - 每次 run 结束时 record 一条；成本美元按模型单价计算（真实 provider 用 pi-ai
- *   Model.cost，mock 用 mock-provider 的 MOCK_MODEL_COST）；
+ * - 每次 run 结束时 record 一条；成本美元按模型单价计算（取 pi-ai Model.cost，
+ *   取不到则按 0 记，不臆造单价）；
  * - 落盘：随会话 jsonl kind:'usage'（修订②：sessions/*.jsonl 归 agent-service）；
  * - 提供 /v1/metrics 聚合摘要（网关暴露）。
  */

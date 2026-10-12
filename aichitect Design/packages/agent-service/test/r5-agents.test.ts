@@ -22,7 +22,7 @@ import { join } from "node:path";
 /* ---------------- buildLlmModel ---------------- */
 
 describe("buildLlmModel", () => {
-  it("配置不齐备返回 null（维持 mock）", () => {
+  it("配置不齐备返回 null（调用方降级为未配置占位）", () => {
     expect(buildLlmModel({ baseURL: "", apiKeyRef: "k", model: "m" })).toBeNull();
     expect(buildLlmModel({ baseURL: "http://x/v1", apiKeyRef: "", model: "m" })).toBeNull();
     expect(buildLlmModel({ baseURL: "http://x/v1", apiKeyRef: "k", model: "" })).toBeNull();

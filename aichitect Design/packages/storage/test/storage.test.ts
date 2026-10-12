@@ -70,7 +70,7 @@ describe("openStorage：迁移与 PRAGMA", () => {
 
     // 升级后写入并读回（数据可读）
     const costs = new CostRepository(h.db);
-    costs.record({ sessionId: "s1", requestId: "r1", requestKind: "chat", model: "m", provider: "mock", promptTokens: 1, completionTokens: 1, totalTokens: 2, costUsd: 0.01, latencyMs: 1, ok: true, ts: "2026-08-12T00:00:00Z" });
+    costs.record({ sessionId: "s1", requestId: "r1", requestKind: "chat", model: "m", provider: "openai", promptTokens: 1, completionTokens: 1, totalTokens: 2, costUsd: 0.01, latencyMs: 1, ok: true, ts: "2026-08-12T00:00:00Z" });
     expect(costs.forSession("s1").length).toBe(1);
     h.close();
   });
@@ -154,8 +154,8 @@ describe("Repository：图像 / 费用", () => {
       sessionId: "s1",
       requestId: "req-1",
       requestKind: "chat",
-      model: "mock-model",
-      provider: "mock",
+      model: "gpt-image-2",
+      provider: "openai",
       promptTokens: 100,
       completionTokens: 50,
       totalTokens: 150,
@@ -190,9 +190,9 @@ describe("Repository：图像 / 费用", () => {
   it("持久化往返：close → 重开 → 全部数据可读（jsonl 之外的 meta.db 快照）", () => {
     const path = dbPath();
     const h = openStorage(path);
-    new ImageMetaRepository(h.db).upsert({ imageId: "img1", sessionId: "s1", meta: { prompt: "p", model: "m", provider: "mock" } });
+    new ImageMetaRepository(h.db).upsert({ imageId: "img1", sessionId: "s1", meta: { prompt: "p", model: "m", provider: "openai" } });
     new CostRepository(h.db).record({
-      sessionId: "s1", requestId: "req-1", requestKind: "chat", model: "m", provider: "mock",
+      sessionId: "s1", requestId: "req-1", requestKind: "chat", model: "m", provider: "openai",
       promptTokens: 1, completionTokens: 1, totalTokens: 2, costUsd: 0.02, latencyMs: 5, ok: true,
       ts: "2026-08-12T00:00:00Z",
     });

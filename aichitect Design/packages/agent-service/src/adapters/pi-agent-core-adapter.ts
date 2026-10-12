@@ -7,8 +7,9 @@
  * - 工具绑定（extensions 组装）→ AgentTool（TypeBox 参数 + execute）；
  * - turn_end 提取 Usage → usage/cost 埋点（C-6 自 M1）。
  *
- * 依赖注入：streamFn（mock 或真实 provider）、model、systemPrompt（含 Skill L1 元数据）。
- * 该文件仅在本包依赖安装成功后由 main.ts 动态加载；安装失败走 MockAdapter 兜底。
+ * 依赖注入：streamFn（真实 provider）、model、systemPrompt（含 Skill L1 元数据）。
+ * 该文件仅在本包依赖安装成功后由 main.ts 动态加载；加载失败或端点未配置时
+ * 由 main.ts 改用 UnconfiguredAdapter（fail-closed：下发明确错误，不产生模拟数据）。
  */
 
 import type {
@@ -383,7 +384,7 @@ export class PiAgentCoreAdapter implements AgentRuntimePort {
             const phase = binding.def.name === "image_generate" ? "image_generate" : "image_edit";
             // P1 修复（R2-REV 前回退）：pi 内核事件流无 phase 语义，在工具执行结束节点补发同型
             // progress（契约 SseProgressData.phase 含 image_generate/image_edit，shared contracts.ts
-            // L157；与 mock 路径语义对齐，done 前必发；isError 时上方已 break，不产生终态外事件）。
+            // L157；done 前必发；isError 时上方已 break，不产生终态外事件）。
             queue.push(
               makeEnvelope(requestId, sessionId, "progress", {
                 phase,

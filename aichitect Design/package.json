@@ -2,7 +2,7 @@
   "name": "aich-design",
   "version": "0.1.0",
   "private": true,
-  "description": "AICH Design 桌面端 AI 建筑平面方案设计工具（monorepo：app / agent-service / skills / extensions / shared / mock-provider）",
+  "description": "AICH Design 桌面端 AI 建筑设计辅助工具（monorepo：app / agent-service / skills / extensions / storage / shared）",
   "workspaces": [
     "packages/*"
   ],

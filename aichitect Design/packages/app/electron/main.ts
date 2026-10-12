@@ -10,7 +10,7 @@
  * 4. 网关 HTTP 客户端封装实例化（agent-service ready 时）
  *
  * TODO-API: agent-service 握手后的状态变化广播（渲染层初始化早于握手时需事件通知）留待
- * P006 联调轮实现；当前握手成功前渲染层全程走 MockGatewayClient。
+ * 后续轮实现；当前握手成功前渲染层走 UnavailableGatewayClient（显式报错，无离线兜底）。
  */
 import { app, BrowserWindow, ipcMain, WebContents } from 'electron';
 import * as fs from 'node:fs';
@@ -194,7 +194,7 @@ async function buildAgentServiceEnv(): Promise<Record<string, string>> {
       env.AICH_LLM_ACTIVE_ID = secrets.activeModelId();
     } else if (secretsStatusHasModels) {
       // R7-2：条目存在但全部未通过注入校验 → 不回退旧单字段（残留的旧端点会成为"假接线"，
-      // 症状恰似"重启后必须重新保存才能用"）；宁走 mock 并明确告警。
+      // 症状恰似"重启后必须重新保存才能用"）；宁不注入并明确告警（服务照常启动，对话侧显式报错）。
       process.stderr.write('[main] 模型条目存在但均未通过注入校验（见 [secrets] 诊断行），不回退旧单字段配置；请在 设置 → LLM 端点 重新保存\n');
     } else if (llmKey) {
       // 兼容回退：旧单模型配置（R5；仅在从未配置过多模型条目时生效）
@@ -278,7 +278,7 @@ function resolveAgentServiceEntry(): string | null {
 /**
  * spawn agent-service：
  * - 入口存在 → spawn（stdio 管道解析 stdout 就绪行），3s 内未握手 → stub 并 kill
- * - 入口不存在 → unavailable（不阻塞渲染层，全程 mock）
+ * - 入口不存在 → unavailable（不阻塞渲染层，UI 显式展示具体原因）
  * 就绪行格式（backend 冻结，README.md:42-46）：
  *   AICH_GATEWAY_READY {"url":"http://127.0.0.1:PORT","token":"...","adapter":"...","pid":...}
  */
@@ -1001,12 +1001,12 @@ function setupApplicationMenu(): void {
 }
 
 app.whenReady().then(() => {
-  // 密钥服务（safeStorage）：无 Key/解密失败时 agent-service 不注入（mock 兜底行为保持）
+  // 密钥服务（safeStorage）：无 Key/解密失败时 agent-service 不注入对应端点（该功能显式报错）
   secrets = new SecretsService(app.getPath('userData'));
   setupApplicationMenu();
   registerIpcHandlers();
   createWindow();
-  // 尽量拉起 agent-service；失败不影响壳启动（渲染层走 mock，见 buildGatewayStatus）
+  // 尽量拉起 agent-service；失败不影响壳启动（渲染层显式报错，见 buildGatewayStatus）
   void startAgentService();
   void initStorage();
 

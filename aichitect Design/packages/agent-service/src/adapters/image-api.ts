@@ -55,7 +55,7 @@ export interface ImageApiResult {
   meta: ImageMeta;
 }
 
-/** 图像端口抽象（真实 http 与 mock 可替换）。 */
+/** 图像端口抽象（真实 http 与未配置占位实现可替换）。 */
 export interface ImageApiPort {
   readonly label: string;
   generate(params: ImageGenerateParams): Promise<ImageApiResult>;

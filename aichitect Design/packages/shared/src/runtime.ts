@@ -3,7 +3,7 @@
  *
  * 本文件定义与 pi-agent-core 解耦的产品级接口，agent-service 内部适配：
  * - PiAgentCoreAdapter：默认实现（锁 @earendil-works/pi-agent-core 0.84.x）；
- * - MockAdapter：依赖不可装时的兜底实现（零外部运行时依赖）。
+ * - UnconfiguredAdapter：端点未配置时的 fail-closed 占位实现（下发明确错误，不产生模拟数据）。
  * 未来换内核只改 adapter，业务代码（网关 / 会话 / 埋点）不动。
  */
 
@@ -85,6 +85,6 @@ export interface AgentRuntimePort {
 
 /** 端口可替换性的构建开关（P006 决策记录）：adapter 选择。 */
 export interface AdapterFactory {
-  /** 尝试创建默认（pi-agent-core）adapter；失败返回 null 由主流程降级 MockAdapter。 */
+  /** 尝试创建默认（pi-agent-core）adapter；失败返回 null 由主流程降级 UnconfiguredAdapter。 */
   create(): Promise<AgentRuntimePort | null>;
 }

@@ -117,7 +117,7 @@ describe("isTransientError", () => {
   it("非瞬态：业务错误 / 用户取消 / 非错误值", () => {
     expect(isTransientError(errnoError(ErrorCode.RUNNER_ERROR))).toBe(false);
     expect(isTransientError(errnoError(ErrorCode.REQUEST_CANCELLED))).toBe(false);
-    expect(isTransientError(errnoError(ErrorCode.PLAN_VALIDATE_FAILED))).toBe(false);
+    expect(isTransientError(errnoError(ErrorCode.IMAGE_COST_LIMIT_EXCEEDED))).toBe(false);
     expect(isTransientError("string")).toBe(false);
   });
 });
@@ -136,7 +136,7 @@ describe("OpenAiImageApi 瞬态重试", () => {
   it("网络失败两次后成功：共 3 次尝试", async () => {
     let calls = 0;
     const api = new OpenAiImageApi({
-      baseURL: "https://img.example.com",
+      generationsUrl: "https://img.example.com/v1/images/generations",
       apiKey: "k",
       fetchImpl: (async () => {
         calls += 1;
@@ -154,7 +154,7 @@ describe("OpenAiImageApi 瞬态重试", () => {
   it("5xx/429 可重试；4xx fail-fast", async () => {
     let fiveHundredCalls = 0;
     const fiveHundred = new OpenAiImageApi({
-      baseURL: "https://img.example.com",
+      generationsUrl: "https://img.example.com/v1/images/generations",
       apiKey: "k",
       fetchImpl: (async () => {
         fiveHundredCalls += 1;
@@ -168,7 +168,7 @@ describe("OpenAiImageApi 瞬态重试", () => {
 
     let fourHundredCalls = 0;
     const fourHundred = new OpenAiImageApi({
-      baseURL: "https://img.example.com",
+      generationsUrl: "https://img.example.com/v1/images/generations",
       apiKey: "k",
       fetchImpl: (async () => {
         fourHundredCalls += 1;
@@ -370,7 +370,7 @@ describe("UsageTracker（P018 扩展）", () => {
     requestId,
     requestKind,
     model: "m",
-    provider: "mock",
+    provider: "openai",
     promptTokens: 1,
     completionTokens: 1,
     cacheReadTokens: 0,

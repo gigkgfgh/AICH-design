@@ -52,7 +52,7 @@ export const DEEPSEEK_THINKING_LEVEL_MAP: Record<string, string> = {
   max: "max",
 };
 
-/** 构建 openai-completions 模型对象；配置不齐备返回 null（调用方维持 mock）。 */
+/** 构建 openai-completions 模型对象；配置不齐备返回 null（调用方降级为未配置占位实现）。 */
 export function buildLlmModel(
   config: LlmEndpointConfig,
   modelOverride?: string,

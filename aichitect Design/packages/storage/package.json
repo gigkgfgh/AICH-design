@@ -2,7 +2,7 @@
   "name": "@aichdesign/storage",
   "version": "0.1.0",
   "private": true,
-  "description": "P017 存储包：node:sqlite（DatabaseSync）meta.db 访问层——PRAGMA user_version 迁移体系（备份先行/幂等/fail-closed）+ session/plan_version/image_version/cost_summary 表与 Repository（版本树/费用/图像元数据）",
+  "description": "P017 存储包：node:sqlite（DatabaseSync）meta.db 访问层——PRAGMA user_version 迁移体系（备份先行/幂等/fail-closed）+ session/image_version/cost_summary 表与 Repository（费用/图像元数据/会话摘要）",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

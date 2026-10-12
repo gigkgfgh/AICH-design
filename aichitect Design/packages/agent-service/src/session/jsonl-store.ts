@@ -3,8 +3,8 @@
  *
  * 布局：<sessionsDir>/<sessionId>.jsonl，每行 { ts, kind, requestId?, data }。
  * 用途：
- * - M1：会话消息流落盘（P006）；mock 全链路验证可人工检查文件；
- * - P019：rehydration 数据源（崩溃重启恢复会话与方案）。
+ * - 会话消息流落盘（P006）；可直接人工检查文件内容排错；
+ * - P019：rehydration 数据源（崩溃重启恢复会话与图像上下文）。
  * 单写者：本进程内同步追加（fs.appendFileSync），避免并发交错。
  */
 

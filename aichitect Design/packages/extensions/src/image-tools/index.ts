@@ -3,8 +3,8 @@
  * - 工具定义 image_generate / image_edit（ToolDef，与 plan-tools 同构，parameters 为 JSON Schema）；
  * - gpt-image-2 约束校验层（validate.ts）+ 图像字节尺寸探测（size-probe.ts）。
  *
- * 与 plan-tools 的差异：本 Extension 不含纯执行逻辑——图像生成/编辑经
- * agent-service 的 ImageApiPort（真实 OpenAI / MockImageProvider）执行；
+ * 本 Extension 不含执行逻辑——图像生成/编辑经 agent-service 的 ImageApiPort
+ * （OpenAiImageApi；未配置时为 UnconfiguredImagePort，直接报"端点未配置"）执行；
  * 本包负责参数契约与 §6.2 全部约束校验（透明背景拒绝 / inputFidelity 省略 /
  * 尺寸 / 像素 / 宽高比 / 枚举 / edits 入参约束）。
  */
