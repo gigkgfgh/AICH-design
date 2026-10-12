@@ -14,6 +14,5 @@ export type {
   SessionContent,
   SessionSummary,
   SseEventEnvelope,
-  StoragePlanRecord,
   UploadedImage,
 } from '../src/types/contracts.js';

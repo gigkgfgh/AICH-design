@@ -116,7 +116,7 @@ export class GatewayHttpClient {
    */
   async run(req: AgentRequest, sessionBearer?: string, runOptions?: RunOptions): Promise<RunResult> {
     const requestId = crypto.randomUUID();
-    // 信封 sessionId 必须非空（网关校验）；listVersions 无 sessionId 字段时兜底会话令牌
+    // 信封 sessionId 必须非空（网关校验）；缺省时兜底会话令牌
     const sessionId =
       'sessionId' in req && typeof req.sessionId === 'string' && req.sessionId.length > 0
         ? req.sessionId

@@ -381,7 +381,7 @@ function buildGatewayStatus(): GatewayStatus {
   };
 }
 
-/** 从 AgentRequest 提取信封 sessionId（listVersions 无 sessionId 字段时兜底） */
+/** 从 AgentRequest 提取信封 sessionId（缺省时兜底当前会话） */
 function sessionIdOf(req: AgentRequest): string {
   return 'sessionId' in req && typeof req.sessionId === 'string' && req.sessionId.length > 0
     ? req.sessionId

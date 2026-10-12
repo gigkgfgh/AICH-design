@@ -58,8 +58,6 @@ const bridge = {
   /** 读取会话完整内容（消息流/图像/版本引用；bridge 模式有效） */
   readSession: (sessionId: string): Promise<SessionContent> => ipcRenderer.invoke('sessions:read', sessionId),
 
-  /** R5：历史方案完整恢复（meta.db plan_version；不可用时返回 []，降级为引用级恢复） */
-
   /**
    * G8 兜底：file:// 图像 → 主进程白名单读取转 dataURL（仅会话数据目录内，fail-closed）。
    * 失败抛错；渲染层保持原 src 并提示。
