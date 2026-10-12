@@ -90,12 +90,6 @@ export function checkImageDimension(width: number, height: number): string[] {
   return errors;
 }
 
-/** 从预设枚举解析像素宽高（预设天然满足尺寸物理约束）。 */
-export function parseImageSizePreset(size: ImageSizePreset): { width: number; height: number } {
-  const [w, h] = size.split("x").map((v) => Number(v));
-  return { width: w ?? 1024, height: h ?? 1024 };
-}
-
 /** 透明背景请求拒绝（§6.2：gpt-image-2 不支持透明 PNG；需要透明走 gpt-image-1.5 双模型路径）。 */
 function transparencyErrors(params: Record<string, unknown>): string[] {
   const errors: string[] = [];

@@ -25,6 +25,7 @@
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { once } from "node:events";
+import { randomUUID } from "node:crypto";
 import type { AgentRequest, SseEventEnvelope } from "@aichdesign/shared";
 import { ErrorCode, makeError } from "@aichdesign/shared";
 import { RunManager } from "../runtime/run-manager.js";
@@ -186,7 +187,7 @@ export async function createHttpGateway(options: HttpGatewayOptions): Promise<Ht
         const registered = imageRegistry.store(
           sessionId,
           {
-            imageId: `img_up_${Date.now().toString(36)}`,
+            imageId: `img_up_${randomUUID()}`,
             url: dataUrl,
             format,
             meta: {
@@ -371,6 +372,11 @@ export async function createHttpGateway(options: HttpGatewayOptions): Promise<Ht
     close: () =>
       new Promise<void>((resolve) => {
         server.close(() => resolve());
+        // SSE 为 keep-alive 长连接：不主动断开时 server.close 的回调永不触发，
+        // 主进程等待就绪行后关闭 / 重启服务时会挂住。Node ≥18.2 支持 closeAllConnections。
+        if (typeof server.closeAllConnections === "function") {
+          server.closeAllConnections();
+        }
       }),
   };
 

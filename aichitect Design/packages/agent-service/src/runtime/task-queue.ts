@@ -55,6 +55,9 @@ export interface TaskQueueOptions {
 /** 默认单次图像成本预估（gpt-image-2 medium 1024x1024 量级，README 登记口径）。 */
 export const DEFAULT_IMAGE_REQUEST_ESTIMATE_USD = 0.04;
 
+/** 死信清单内存上限（超出丢最旧；完整历史已落会话 jsonl，不依赖内存全量）。 */
+export const DEAD_LETTER_LIMIT = 500;
+
 export class RetryingRuntime implements AgentRuntimePort {
   private readonly inner: AgentRuntimePort;
   private readonly policy: RetryPolicy;
@@ -63,6 +66,9 @@ export class RetryingRuntime implements AgentRuntimePort {
   private readonly imageCostUsed?: () => number;
   private readonly imageRequestEstimateUsd: number;
   private readonly dead: DeadLetterEntry[] = [];
+  /** 在途终态观察（dispose 时统一收尾，避免 unhandled rejection）。 */
+  private readonly watchers = new Set<Promise<void>>();
+  private disposed = false;
 
   constructor(options: TaskQueueOptions) {
     this.inner = options.inner;
@@ -82,6 +88,10 @@ export class RetryingRuntime implements AgentRuntimePort {
   }
 
   async dispose(): Promise<void> {
+    this.disposed = true;
+    // 等待在途终态观察收尾（各自已挂 catch，不会因 dispose 提前退出而 unhandled reject）。
+    await Promise.allSettled([...this.watchers]);
+    this.watchers.clear();
     await this.inner.dispose();
   }
 
@@ -139,19 +149,26 @@ export class RetryingRuntime implements AgentRuntimePort {
     }
 
     // 3) 终态观察：error 终局（非用户取消）→ 死信登记；结果原样透传不改动。
-    void handle.result.then((response) => {
-      if (response.kind === "error" && response.code !== ErrorCode.REQUEST_CANCELLED) {
-        this.registerDeadLetter({
-          requestId: req.requestId,
-          sessionId: req.sessionId,
-          requestKind: req.request.kind,
-          code: response.code,
-          message: response.message,
-          attempts: 1,
-          ts: new Date().toISOString(),
-        });
-      }
-    });
+    const watcher = handle.result.then(
+      (response) => {
+        if (response.kind === "error" && response.code !== ErrorCode.REQUEST_CANCELLED) {
+          this.registerDeadLetter({
+            requestId: req.requestId,
+            sessionId: req.sessionId,
+            requestKind: req.request.kind,
+            code: response.code,
+            message: response.message,
+            attempts: 1,
+            ts: new Date().toISOString(),
+          });
+        }
+      },
+      () => {
+        // result 自身拒绝（adapter 异常路径）：内层已通过 error 终态上报，这里仅防止
+        // unhandled rejection 打崩进程；死信登记不重复做。
+      },
+    ).finally(() => this.watchers.delete(watcher));
+    this.watchers.add(watcher);
 
     return handle;
   }
@@ -165,7 +182,12 @@ export class RetryingRuntime implements AgentRuntimePort {
   }
 
   private registerDeadLetter(entry: DeadLetterEntry): void {
+    if (this.disposed) return;
     this.dead.push(entry);
+    // 容量上限：内存仅保留最近 DEAD_LETTER_LIMIT 条，完整历史已落会话 jsonl。
+    if (this.dead.length > DEAD_LETTER_LIMIT) {
+      this.dead.splice(0, this.dead.length - DEAD_LETTER_LIMIT);
+    }
     this.sessionStore?.append(
       entry.sessionId,
       "error",

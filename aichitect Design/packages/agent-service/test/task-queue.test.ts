@@ -17,7 +17,7 @@ import { ErrorCode, makeEnvelope } from "@aichdesign/shared";
 import type { AgentResponse, AgentRuntimePort, RunHandle, RunRequest } from "@aichdesign/shared";
 import { withRetry, isTransientError, DEFAULT_RETRY_POLICY } from "../src/runtime/retry.js";
 import type { RetryPolicy } from "../src/runtime/retry.js";
-import { RetryingRuntime, DEFAULT_IMAGE_REQUEST_ESTIMATE_USD } from "../src/runtime/task-queue.js";
+import { RetryingRuntime, DEFAULT_IMAGE_REQUEST_ESTIMATE_USD, DEAD_LETTER_LIMIT } from "../src/runtime/task-queue.js";
 import { UsageTracker } from "../src/telemetry/usage-tracker.js";
 import { JsonlSessionStore } from "../src/session/jsonl-store.js";
 import { AsyncQueue } from "../src/runtime/async-queue.js";
@@ -359,6 +359,72 @@ describe("RetryingRuntime", () => {
     expect(response.kind === "error" && response.code).toBe(ErrorCode.REQUEST_CANCELLED);
     expect(launched).toBe(1); // 取消不触发重试
     expect(runtime.deadLetters().length).toBe(0); // 取消不进死信
+  });
+
+  /* ---- E11：result 自身拒绝不得变成 unhandled rejection 打崩进程 ---- */
+
+  it("result promise 拒绝（adapter 异常路径）不产生未处理拒绝", async () => {
+    const inner = new StubAdapter();
+    const unhandled: unknown[] = [];
+    const onUnhandled = (err: unknown): void => {
+      unhandled.push(err);
+    };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      inner.launchFn = async () => ({
+        events: new AsyncQueue<ReturnType<typeof makeEnvelope>>(),
+        result: Promise.reject(errnoError("ECONNRESET", "内核崩溃")),
+        status: "failed",
+      });
+      const runtime = new RetryingRuntime({ inner, policy: { sleep: zeroSleep } });
+      await runtime.run(genImageRequest());
+      await new Promise((r) => setTimeout(r, 20)); // 等微任务 + 事件循环一轮
+      expect(unhandled).toEqual([]);
+      await runtime.dispose(); // dispose 需能在观察未收尾时安全等待
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
+  /* ---- E12：死信清单内存上限 ---- */
+
+  it("死信清单封顶 DEAD_LETTER_LIMIT（超出丢最旧，落盘历史不受影响）", async () => {
+    const inner = new StubAdapter();
+    inner.launchFn = async (req) => immediateHandle(req.sessionId, { kind: "error", code: ErrorCode.RUNNER_ERROR, message: "boom" });
+    const store = new JsonlSessionStore(dir);
+    const runtime = new RetryingRuntime({ inner, policy: { sleep: zeroSleep }, sessionStore: store });
+    const total = DEAD_LETTER_LIMIT + 7;
+    for (let i = 0; i < total; i += 1) {
+      await runtime.run({ requestId: `req-${i}`, sessionId: "s1", request: { kind: "chat", sessionId: "s1", prompt: "x" } });
+    }
+    await new Promise((r) => setTimeout(r, 20)); // 终态观察异步登记
+    expect(runtime.deadLetters().length).toBe(DEAD_LETTER_LIMIT);
+    // 丢的是最旧的：首条应为 req-(total-DEAD_LETTER_LIMIT)
+    expect(runtime.deadLetters()[0]?.requestId).toBe(`req-${total - DEAD_LETTER_LIMIT}`);
+    // 完整历史仍落 jsonl
+    expect(store.readLines("s1").filter((l) => l.kind === "error").length).toBe(total);
+  });
+
+  /* ---- E11：dispose 后不再登记死信 ---- */
+
+  it("dispose 之后才兑现的终态 error 不再登记死信（避免关闭窗口期写盘）", async () => {
+    const inner = new StubAdapter();
+    let settle!: (h: RunHandle) => void;
+    inner.launchFn = () =>
+      new Promise<RunHandle>((resolve) => {
+        settle = resolve;
+      });
+    const runtime = new RetryingRuntime({ inner, policy: { sleep: zeroSleep } });
+    const runPromise = runtime.run(genImageRequest());
+    // dispose 先行：此时 handle 尚未交付，终态观察也未挂上。
+    await runtime.dispose();
+    expect(inner.launchCalls).toBe(1);
+    // 之后再交付一个 error 终态 handle——不应产生死信登记。
+    settle(immediateHandle("s1", { kind: "error", code: ErrorCode.RUNNER_ERROR, message: "late" }));
+    const handle = await runPromise;
+    await handle.result;
+    await new Promise((r) => setTimeout(r, 20));
+    expect(runtime.deadLetters().length).toBe(0);
   });
 });
 

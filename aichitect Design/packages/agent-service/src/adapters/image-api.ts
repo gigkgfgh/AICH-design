@@ -26,6 +26,7 @@ import type { ImageOutputFormat, ImageQuality, ImageSizePreset } from "@aichdesi
 import { decodeBase64DataUrl } from "@aichdesign/extensions";
 import { withRetry } from "../runtime/retry.js";
 import type { RetryPolicy } from "../runtime/retry.js";
+import { assertPublicHttpUrl } from "../tools/search.js";
 
 /** image_generate 标准化入参（已过约束校验层）。 */
 export interface ImageGenerateParams {
@@ -62,10 +63,20 @@ export interface ImageApiPort {
   edit(params: ImageEditParams): Promise<ImageApiResult>;
 }
 
-/** 从 size 预设解析像素宽高（预设天然满足 §6.2 尺寸约束）。 */
+/**
+ * 从 size 预设解析像素宽高，用于写入 ImageMeta（meta.width/height）。
+ * 官方预设 `auto` 无固定宽高，取 gpt-image-2 的默认输出 1024x1024；
+ * 其余非法输入直接抛错——此前 `Number("auto")` 得 NaN，会把 NaN 写进 ImageMeta。
+ */
 export function parseSizePreset(size: ImageSizePreset): { width: number; height: number } {
-  const [w, h] = size.split("x").map((v) => Number(v));
-  return { width: w ?? 1024, height: h ?? 1024 };
+  if (size === "auto") return { width: 1024, height: 1024 };
+  const [wRaw, hRaw] = size.split("x");
+  const w = Number(wRaw);
+  const h = Number(hRaw);
+  if (!Number.isInteger(w) || !Number.isInteger(h) || w <= 0 || h <= 0) {
+    throw new Error(`size 预设非法：${String(size)}（期望形如 1024x1024 或 auto）`);
+  }
+  return { width: w, height: h };
 }
 
 /* ---------------- 未配置端口（fail-closed） ---------------- */
@@ -459,12 +470,21 @@ export async function bytesFromUri(
   const decoded = decodeBase64DataUrl(uri);
   if (decoded) return { bytes: decoded.bytes, format: decoded.format };
   if (/^https?:\/\//i.test(uri)) {
-    const res = await fetch(uri);
+    // SSRF 防护：与 tools/search.ts 的 fetch_page 同一套口径（协议白名单 + DNS 解析结果私网拒绝）。
+    // 参考图 URL 可能来自模型/用户输入，不经该校验即可读内网与云元数据端点。
+    const rejected = await assertPublicHttpUrl(uri);
+    if (rejected) throw new Error(`参考图 URL 被拒绝（${rejected}）：${uri}`);
+    const res = await fetch(uri, { signal: AbortSignal.timeout(30_000) });
     if (!res.ok) throw new Error(`参考图下载失败：${uri} ${res.status}`);
     const raw = Buffer.from(await res.arrayBuffer());
     return { bytes: raw, format: sniffFormat(raw) };
   }
   // file:// 或相对路径（联调参数表：主进程透传的本地 URI）。
+  // 协议白名单：除 dataURL / http(s) / file 与相对路径外一律拒绝——
+  // 否则 ftp:// 等未知 scheme 会被 pathResolve 成相对路径误读为本地文件。
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(uri) && !/^file:\/\//i.test(uri)) {
+    throw new Error(`参考图协议不支持（仅 dataURL / http(s) / 本地路径）：${uri}`);
+  }
   const path = uri.startsWith("file://") ? fileURLToPath(uri) : uri;
   const resolved = pathResolve(path);
   if (allowedLocalRoots && allowedLocalRoots.length > 0) {

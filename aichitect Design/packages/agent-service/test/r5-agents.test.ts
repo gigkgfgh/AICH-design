@@ -202,11 +202,69 @@ describe("网关 R5 扩展", () => {
           body: JSON.stringify({ sessionId: "s1", dataUrl: "data:text/plain;base64,QUJD" }),
         });
         expect(bad.status).toBe(400);
+
+        // E13：同毫秒并发上传的 imageId 必须唯一（旧实现用 Date.now()，会撞 id 覆盖落盘）
+        const uploads = await Promise.all(
+          Array.from({ length: 8 }, () =>
+            fetch(`${gateway.url}/v1/images`, {
+              method: "POST",
+              headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+              body: JSON.stringify({ sessionId: "s1", dataUrl: `data:image/png;base64,${pngB64}`, name: "并发" }),
+            }).then(async (r) => ((await r.json()) as { imageId: string }).imageId),
+          ),
+        );
+        expect(new Set(uploads).size).toBe(uploads.length);
+        for (const imageId of uploads) {
+          expect(registry.resolveUrl(imageId)).toBeTruthy();
+        }
       } finally {
+        // E10：SSE 长连接存在时 close() 必须能 resolve（closeAllConnections）
         await gateway.close();
       }
     } finally {
       rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
+  });
+
+  it("E10：SSE 长连接未断开时 close() 也能 resolve（closeAllConnections）", async () => {
+    /** 永远不结束的事件流：模拟挂起的 SSE 订阅。 */
+    class HangingAdapter implements AgentRuntimePort {
+      loadSkill(): void {}
+      registerExtension(): void {}
+      async dispose(): Promise<void> {}
+      async run(req: RunRequest): Promise<RunHandle> {
+        const queue = new AsyncQueue<ReturnType<typeof makeEnvelope>>();
+        queue.push(makeEnvelope(req.requestId, req.sessionId, "delta", { delta: "开始" }));
+        // 不 close：流保持打开，客户端连接保持 keep-alive。
+        return { events: queue, result: new Promise(() => {}), status: "running" };
+      }
+    }
+    const runManager = new RunManager(new HangingAdapter());
+    const gateway = await createHttpGateway({
+      adapterLabel: "stub",
+      token: "proc",
+      runManager,
+      usageTracker: new UsageTracker(),
+      host: "127.0.0.1",
+      port: 0,
+    });
+    const started = await fetch(`${gateway.url}/v1/run`, {
+      method: "POST",
+      headers: { authorization: "Bearer proc", "content-type": "application/json" },
+      body: JSON.stringify({ requestId: "r-hang", sessionId: "s1", request: { kind: "chat", sessionId: "s1", prompt: "hi" } }),
+    });
+    expect(started.status).toBe(202);
+    const { requestId } = (await started.json()) as { requestId: string };
+
+    // 建立 SSE 连接且不主动断开
+    const sse = await fetch(`${gateway.url}/v1/stream/${requestId}`, {
+      headers: { authorization: "Bearer proc" },
+    });
+    expect(sse.status).toBe(200);
+    expect(sse.body).toBeTruthy();
+
+    // 关键断言：无 closeAllConnections 时此处会永久挂起
+    await expect(gateway.close()).resolves.toBeUndefined();
+    await sse.body?.cancel().catch(() => {});
   });
 });

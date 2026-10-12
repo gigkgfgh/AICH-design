@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config.js";
-import { OpenAiImageApi, UnconfiguredImagePort } from "../src/adapters/image-api.js";
+import { OpenAiImageApi, UnconfiguredImagePort, parseSizePreset, bytesFromUri } from "../src/adapters/image-api.js";
 import { resolveImagePort } from "../src/main.js";
 
 function configWithEnv(env: Record<string, string | undefined>) {
@@ -168,5 +168,41 @@ describe("R6-16 OpenAiImageApi：完整 URL 原样使用（零拼接）", () => 
     await expect(
       api.edit({ images: ["data:image/png;base64,eA=="], prompt: "p", n: 1, size: "1024x1024", quality: "high", outputFormat: "png" }),
     ).rejects.toThrow(/图像编辑端点未配置/);
+  });
+});
+
+describe("parseSizePreset（E1 修复：auto 不再产出 NaN）", () => {
+  it("auto → gpt-image-2 默认输出 1024x1024", () => {
+    expect(parseSizePreset("auto")).toEqual({ width: 1024, height: 1024 });
+  });
+
+  it("数值预设按字面解析", () => {
+    expect(parseSizePreset("1536x1024")).toEqual({ width: 1536, height: 1024 });
+  });
+
+  it("非法值抛错而非静默返回 NaN", () => {
+    expect(() => parseSizePreset("wide" as never)).toThrow(/size 预设非法/);
+    expect(() => parseSizePreset("1024x" as never)).toThrow(/size 预设非法/);
+    expect(() => parseSizePreset("" as never)).toThrow(/size 预设非法/);
+  });
+});
+
+describe("bytesFromUri（E2 修复：http(s) 参考图同样过 SSRF 校验）", () => {
+  it("拒绝内网/回环 URL（不发起请求）", async () => {
+    await expect(bytesFromUri("http://127.0.0.1/x.png")).rejects.toThrow(/参考图 URL 被拒绝/);
+    await expect(bytesFromUri("http://169.254.169.254/latest/meta-data")).rejects.toThrow(/参考图 URL 被拒绝/);
+    await expect(bytesFromUri("http://192.168.1.10/x.png")).rejects.toThrow(/参考图 URL 被拒绝/);
+  });
+
+  it("拒绝非 http(s)/file 协议（不会误当本地路径读取）", async () => {
+    await expect(bytesFromUri("ftp://example.com/x.png")).rejects.toThrow(/参考图协议不支持/);
+  });
+
+  it("dataURL 不经网络校验，直接解码", async () => {
+    const png1x1 =
+      "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+    const out = await bytesFromUri(png1x1);
+    expect(out.format).toBe("png");
+    expect(out.bytes.length).toBeGreaterThan(0);
   });
 });
