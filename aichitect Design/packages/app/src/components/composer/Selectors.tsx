@@ -1,7 +1,7 @@
 /**
  * Composer 选择器（R5，ZCode 风格输入区下边缘）：
  * - AgentSelector：左下角子 agent 选择（主 Agent 自动路由 / 方案起草 / 图像生成 / 案例调研）
- * - ModelSelector：右下角模型选择（mock 内置 + 已配置模型 + 常用预设）
+ * - ModelSelector：右下角模型选择（服务端缺省 + 已配置模型 + 常用预设）
  * - ThinkingSelector：思考深度档位（off/low/medium/high/xhigh/max；R6-18 删除 minimal）
  */
 
@@ -90,7 +90,7 @@ export function AgentSelector(props: { value: SubAgentId; onChange: (v: SubAgent
 /* ---------------- 模型选择器（R6-7：仅已配置模型；无配置时仅显示默认项，仍可见） ---------------- */
 
 export function ModelSelector(props: {
-  /** '' = 服务端缺省（mock/激活模型） */
+  /** '' = 服务端缺省（激活模型） */
   value: string;
   onChange: (v: string) => void;
   /** 已配置的自定义模型 id 列表（密钥管理页维护） */

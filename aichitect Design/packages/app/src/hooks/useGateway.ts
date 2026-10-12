@@ -1,14 +1,15 @@
 /**
  * useGateway —— 网关状态与客户端选择（从 App.tsx 抽出，P-R3 重构；P016 接线轮加 refresh）。
  *
- * Electron bridge 且 agent-service ready → IpcGatewayClient；否则 MockGatewayClient
- * （浏览器直开预览同样可用）。refresh() 供服务重启后（Key 保存）重新探测。
+ * Electron bridge 且网关可用 → IpcGatewayClient；否则 UnavailableGatewayClient
+ * （fail-closed：不产生模拟数据，请求直接报错并提示完成配置）。
+ * refresh() 供服务重启后（Key 保存）重新探测。
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { GatewayStatus } from '../types/contracts';
 import type { GatewayClient } from '../gateway/types';
-import { mockGateway } from '../gateway/mockGateway';
+import { unavailableGateway } from '../gateway/unavailableGateway';
 import { IpcGatewayClient } from '../gateway/ipcGateway';
 
 export interface UseGatewayResult {
@@ -21,23 +22,23 @@ export interface UseGatewayResult {
 
 export function useGateway(): UseGatewayResult {
   const [status, setStatus] = useState<GatewayStatus | null>(null);
-  const clientRef = useRef<GatewayClient>(mockGateway);
+  const clientRef = useRef<GatewayClient>(unavailableGateway);
   const stable: { current: GatewayClient } = clientRef;
 
   const probe = useCallback(async (): Promise<void> => {
     const bridge = window.aichBridge;
     if (!bridge) {
-      clientRef.current = mockGateway;
-      setStatus({ agentService: 'unavailable', gateway: 'mock' });
+      clientRef.current = unavailableGateway;
+      setStatus({ agentService: 'unavailable', gateway: 'none' });
       return;
     }
     try {
       const s = await bridge.getGatewayStatus();
-      clientRef.current = s.gateway === 'bridge' ? new IpcGatewayClient(bridge) : mockGateway;
+      clientRef.current = s.gateway === 'bridge' ? new IpcGatewayClient(bridge) : unavailableGateway;
       setStatus(s);
     } catch {
-      clientRef.current = mockGateway;
-      setStatus({ agentService: 'unavailable', gateway: 'mock' });
+      clientRef.current = unavailableGateway;
+      setStatus({ agentService: 'unavailable', gateway: 'none' });
     }
   }, []);
 

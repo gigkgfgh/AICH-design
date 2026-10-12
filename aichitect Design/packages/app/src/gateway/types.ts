@@ -1,11 +1,11 @@
 /**
  * 渲染层网关抽象（P007/P010）
  *
- * UI 不感知具体实现：MockGatewayClient（本地 mock 全链路）与 IpcGatewayClient（Electron IPC 桥
- * → 主进程 → agent-service HTTP/SSE）实现同一接口，由 App 按 GatewayStatus.gateway 选择。
+ * UI 不感知具体实现：UnavailableGatewayClient（网关未就绪，所有调用抛错/下发 error 信封）
+ * 与 IpcGatewayClient（Electron IPC 桥 → 主进程 → agent-service HTTP/SSE）实现同一接口，
+ * 由 App 按 GatewayStatus.gateway 选择：'bridge' → IPC 桥；'none' → 不可用客户端。
  *
- * mock 直连模式下默认使用 MockGatewayClient；
- * // TODO-API: 切换 backend 网关 —— 在 electron 壳内（agent-service ready）自动切 IpcGatewayClient。
+ * 无本地数据兜底：未连接网关时对话/图像一律显式报错，不做离线模拟。
  */
 import type { AgentRequest, AgentResponse, GatewayStatus, RunOptions, SseDeltaData, SseEventEnvelope, SseEventType, SseThinkingData, SseToolData, SseUsageData } from '../types/contracts';
 
@@ -35,7 +35,7 @@ export interface GatewayClient {
   cancel(requestId: string): Promise<void>;
 }
 
-/** 按信封 type 分发到对应回调（mock 与 IPC 共用） */
+/** 按信封 type 分发到对应回调（不可用客户端与 IPC 桥共用） */
 export function dispatchEnvelope(envelope: SseEventEnvelope, handlers: StreamHandlers): void {
 switch (envelope.type satisfies SseEventType) {
     case 'delta':

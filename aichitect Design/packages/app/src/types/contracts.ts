@@ -5,7 +5,7 @@
  * AgentResponse/SSE 信封（SseEventEnvelope/SseDeltaData/SseProgressData/SseErrorData/
  * SsePartialData）/ImageMeta/错误码 ErrorCode），本文件一律 re-export，禁止本地重复定义。
  *
- * 本文件仅保留**前端视图模型扩展**（非契约，mock 层与 UI 共用）：
+ * 本文件仅保留**前端视图模型扩展**（非契约，网关层与 UI 共用）：
  * ChatMessage / ImageVersion / AgentServiceStatus / GatewayStatus。
  * R7-1：方案/版本树相关视图模型随方案链路移除。
  * 若 shared 契约变更，本文件无需改动（消费方直接获得新类型）。
@@ -13,14 +13,14 @@
 export * from '@aichdesign/shared';
 import type { SubAgentId, ThinkingLevel } from '@aichdesign/shared';
 
-/* ---------------- 前端视图模型（非契约，mock 层与 UI 共用） ---------------- */
+/* ---------------- 前端视图模型（非契约，网关层与 UI 共用） ---------------- */
 
 import type { ImageMeta } from '@aichdesign/shared';
 
 /** 图像版本节点（P013 视图模型；meta 契约权威在 shared.ImageMeta）。 */
 export interface ImageVersion {
   imageId: string;
-  /** 图像地址：mock 阶段为 dataURL；P012 落盘后可为 file:// 或 http url */
+  /** 图像地址：可为 dataURL、file:// 或 http(s) url（由图像端点返回形态决定） */
   url: string;
   /** 图像元数据（prompt/model/provider/费用/耗时 等） */
   meta: ImageMeta;
@@ -52,10 +52,10 @@ export interface ChatMessage {
 export type AgentServiceStatus = 'ready' | 'stub' | 'unavailable';
 
 export interface GatewayStatus {
-  /** agent-service 是否已就绪（ready=可走本地 HTTP 桥；stub=占位未拉起，渲染层走 mock） */
+  /** agent-service 是否已就绪（ready=可走本地 HTTP 桥；stub=占位未拉起；unavailable=入口缺失/未启动） */
   agentService: AgentServiceStatus;
-  /** 渲染侧网关模式：mock = 本地 mock 数据层；bridge = Electron IPC 桥 → 主进程网关 */
-  gateway: 'mock' | 'bridge';
+  /** 渲染侧网关模式：none = 无可用网关（请求失败并提示配置）；bridge = Electron IPC 桥 → 主进程网关 */
+  gateway: 'none' | 'bridge';
   /** 网关地址（bridge 模式有效） */
   gatewayUrl?: string;
   /** 会话数据目录（bridge 模式有效；设置面板展示/图像兜底白名单根） */
@@ -64,6 +64,14 @@ export interface GatewayStatus {
   skillsDir?: string;
   /** Agent 日志目录（R6-6） */
   logsDir?: string;
+  /**
+   * 不可用时的人类可读原因（渲染层据此展示可操作提示）。
+   * 仅 agentService !== 'ready' 时有值；恢复就绪后被清除。
+   */
+  error?: {
+    code: 'no-entry' | 'handshake-timeout' | 'spawn-error' | 'exited' | 'no-bridge';
+    message: string;
+  };
 }
 
 /* ---------------- 会话历史（P-R3 前端重构：主进程读 sessions/*.jsonl） ---------------- */

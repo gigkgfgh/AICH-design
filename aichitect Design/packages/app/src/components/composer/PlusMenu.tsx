@@ -19,7 +19,7 @@ export interface PlusMenuProps {
   onAddAttachment: (a: Attachment) => void;
   /** 图片注册回调（bridge 可用时经 /v1/images） */
   onRegisterImage?: (dataUrl: string, name: string) => Promise<{ imageId: string; url: string } | null>;
-  /** 加载外部技能列表（懒加载；mock/无 bridge 返回 []） */
+  /** 加载外部技能列表（懒加载；无 bridge 返回 []） */
   onLoadSkills: () => Promise<Array<{ name: string; description: string }>>;
   /** 当前选定的技能（高亮 + 再次点击取消） */
   selectedSkill: SelectedSkill | null;

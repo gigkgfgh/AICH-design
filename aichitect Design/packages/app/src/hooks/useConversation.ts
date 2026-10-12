@@ -2,7 +2,7 @@
  * useConversation —— 单会话编排（从 App.tsx 抽出，P-R3 重构；R7-1 方案链路移除）。
  *
  * - 对话流：chat（main Agent 承接）/ research（调研子 agent）/ image-gen（图像子 agent）
- * - 图像流（P013）：genImage（文生图）/ editImage（参考图编辑），mock 先行 + 网关 SSE
+ * - 图像流（P013）：genImage（文生图）/ editImage（参考图编辑），全经网关 SSE；网关未连接时显式报错
  * - sessionId 参数化：请求携带真实会话 id（P016 会话 token 由主进程按 sessionId 注入）
  * - restore()：从主进程 sessions:read 恢复历史会话（消息/图像）
  * - 会话切换时 reset() 清空本地状态
@@ -22,8 +22,7 @@ import type {
   ThinkingLevel,
 } from '../types/contracts';
 import type { GatewayClient } from '../gateway/types';
-import { mockGateway } from '../gateway/mockGateway';
-import { generateMockImageDataUrl } from '../lib/mockImage';
+import { isGatewayAvailable } from '../gateway/unavailableGateway';
 
 /** R5：主 Agent 意图路由（显式选定子 agent 时不再路由）——导出供单测。R7-1：默认 main。 */
 export function classifyAgentIntent(text: string): SubAgentId {
@@ -63,12 +62,6 @@ let msgSeq = 0;
 function nextMessageId(): string {
   msgSeq += 1;
   return `msg-${Date.now().toString(36)}-${msgSeq}`;
-}
-
-let imgSeq = 0;
-function nextImageId(): string {
-  imgSeq += 1;
-  return `img-${Date.now().toString(36)}-${imgSeq}`;
 }
 
 /** R7-2：模型用量聚合（最近一轮 = 上下文规模口径；会话累计由逐轮 usage 累加）。 */
@@ -185,7 +178,7 @@ export function useConversation(
     options.onSessionTouched?.();
   }, [options]);
 
-  /** 图像响应入树（mock 与网关 done.image 共用） */
+  /** 图像响应入树（网关 done.image 单一来源） */
   const addImageResponse = useCallback((response: Extract<AgentResponse, { kind: 'image' }>) => {
     const version: ImageVersion = {
       imageId: response.imageId,
@@ -199,7 +192,7 @@ export function useConversation(
     setImageError(null);
   }, []);
 
-  /** 发起图像请求（genImage / editImage；mock 本地生成 / 网关 SSE 双路径） */
+  /** 发起图像请求（genImage / editImage；经网关 SSE，网关不可用时直接报错） */
   const runImageRequest = useCallback(
     async (kind: 'genImage' | 'editImage', prompt: string) => {
       if (imageLoading) return;
@@ -219,56 +212,37 @@ export function useConversation(
         request = { kind: 'genImage', sessionId, prompt, refImageId: undefined };
       }
 
-      if (clientRef.current !== mockGateway) {
-        try {
-          const { requestId } = await clientRef.current.run(request);
-          unsubRef.current = clientRef.current.subscribe(requestId, {
-            onDelta: () => undefined,
-            onUsage: accumulateUsage,
-            onDone: (response) => {
-              if (response.kind === 'image') {
-                addImageResponse(response);
-              } else if (response.kind === 'error') {
-                setImageError(`${response.code}：${response.message}`);
-                setImageLoading(false);
-              }
-              unsubRef.current?.();
-              unsubRef.current = null;
-              options.onSessionTouched?.();
-            },
-            onError: (err) => {
-              setImageError(`${err.code}：${err.message}`);
-              setImageLoading(false);
-              unsubRef.current?.();
-              unsubRef.current = null;
-            },
-          });
-        } catch (err) {
-          setImageError(`图像请求失败：${(err as Error).message}`);
-          setImageLoading(false);
-        }
+      if (!isGatewayAvailable(clientRef.current)) {
+        setImageError('未连接本地网关，无法生成/编辑图像。请在「设置 → 图像端点」完成配置后重启本地服务。');
+        setImageLoading(false);
         return;
       }
 
-      // mock 先行路径（无 LLM/图像端点配置时的离线兜底）
       try {
-        const refDataUrl = kind === 'editImage' ? (curImage?.url ?? null) : null;
-        const url = await generateMockImageDataUrl(prompt, { refDataUrl });
-        const meta: ImageMeta = {
-          prompt,
-          model: 'gpt-image-2 (mock)',
-          provider: 'aichmock',
-          parentImageId: kind === 'editImage' ? (curImage?.imageId ?? undefined) : undefined,
-          width: 1024,
-          height: 1024,
-          durationMs: 420,
-          costUsd: 0.0064,
-          status: 'succeeded',
-          createdAt: new Date().toISOString(),
-        };
-        addImageResponse({ kind: 'image', imageId: nextImageId(), url, meta });
+        const { requestId } = await clientRef.current.run(request);
+        unsubRef.current = clientRef.current.subscribe(requestId, {
+          onDelta: () => undefined,
+          onUsage: accumulateUsage,
+          onDone: (response) => {
+            if (response.kind === 'image') {
+              addImageResponse(response);
+            } else if (response.kind === 'error') {
+              setImageError(`${response.code}：${response.message}`);
+              setImageLoading(false);
+            }
+            unsubRef.current?.();
+            unsubRef.current = null;
+            options.onSessionTouched?.();
+          },
+          onError: (err) => {
+            setImageError(`${err.code}：${err.message}`);
+            setImageLoading(false);
+            unsubRef.current?.();
+            unsubRef.current = null;
+          },
+        });
       } catch (err) {
-        setImageError(`图像生成失败：${(err as Error).message}`);
+        setImageError(`图像请求失败：${(err as Error).message}`);
         setImageLoading(false);
       }
     },

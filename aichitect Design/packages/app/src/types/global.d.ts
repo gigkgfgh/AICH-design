@@ -81,7 +81,7 @@ declare global {
   }
 
   interface Window {
-    /** Electron bridge 模式存在；浏览器直开（Vite 预览）时 undefined → 渲染层走 mock */
+    /** Electron 壳内存在；浏览器直开（Vite 预览）时 undefined → 渲染层走不可用网关（显式报错） */
     aichBridge?: AichBridge;
   }
 }

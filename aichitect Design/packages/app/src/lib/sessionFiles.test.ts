@@ -24,7 +24,7 @@ const IMAGE_LINE = (imageId: string, url: string) =>
     data: {
       imageId,
       url,
-      meta: { prompt: 'p', model: 'm', provider: 'mock', createdAt: '2026-08-24T01:00:03Z' },
+      meta: { prompt: 'p', model: 'm', provider: 'openai', createdAt: '2026-08-24T01:00:03Z' },
     },
   });
 

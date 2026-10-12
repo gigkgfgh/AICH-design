@@ -5,7 +5,7 @@
  * （HTTP POST /v1/run、GET /v1/stream/:requestId SSE、POST /v1/cancel，Bearer token）。
  *
  * 当 GatewayStatus.gateway === 'bridge' 时由 App 选用本实现；
- * TODO-API: P006 agent-service 就绪后启用（当前 agentService 未就绪，默认走 mock）。
+ * 否则退回 UnavailableGatewayClient（显式报错，不提供离线兜底）。
  */
 import type { AgentRequest, GatewayStatus, SseEventEnvelope } from '../types/contracts';
 import type { GatewayClient, StreamHandlers } from './types';

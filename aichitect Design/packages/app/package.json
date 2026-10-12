@@ -2,7 +2,7 @@
   "name": "@aichdesign/app",
   "version": "0.1.0",
   "private": true,
-  "description": "AICH Design 桌面客户端（P007 Electron 壳 + ChatPanel / P010 PlanCanvas + VersionTree + 对话修改流，mock 先行）",
+  "description": "AICH Design 桌面客户端（Electron 壳：对话面板 / 图像画布与编辑 / 预览 / 会话与设置；渲染层经 IPC 桥接入本地 agent-service，未连接时显式报错）",
   "type": "module",
   "main": "dist-electron/electron/main.js",
   "scripts": {

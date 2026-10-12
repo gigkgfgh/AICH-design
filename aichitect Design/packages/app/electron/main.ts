@@ -48,6 +48,11 @@ let mainWindow: BrowserWindow | null = null;
 let agentServiceStatus: AgentServiceStatus = 'unavailable';
 let agentServiceChild: ChildProcess | null = null;
 let gatewayClient: GatewayHttpClient | null = null;
+/**
+ * 当前不可用的原因（渲染层据此展示可操作提示）。
+ * 每次 startAgentService() 开头重置，恢复就绪后由 buildGatewayStatus 不返回。
+ */
+let agentServiceError: NonNullable<GatewayStatus['error']> | null = null;
 
 /** 进程级 token（握手下发；P016 起作为 authorize 的 bootstrap 凭据与兼容回退）。 */
 let processToken: string | undefined;
@@ -280,6 +285,10 @@ function resolveAgentServiceEntry(): string | null {
 function trySpawnAgentService(extraEnv: Record<string, string>): AgentServiceStatus {
   const entry = resolveAgentServiceEntry();
   if (!entry) {
+    agentServiceError = {
+      code: 'no-entry',
+      message: '未找到 agent-service 入口（packages/agent-service/dist/main.js）。请先执行 npm run build。',
+    };
     return 'unavailable';
   }
 
@@ -304,7 +313,11 @@ function trySpawnAgentService(extraEnv: Record<string, string>): AgentServiceSta
       if (agentServiceStatus !== 'ready') {
         agentServiceStatus = 'stub';
         // R7-2：stub 原因可见（此前静默 kill，用户只见"没配置"，无从排查）
-        process.stderr.write('[main] agent-service 15s 握手超时 → stub（渲染层走 mock；可重启应用或检查 agent-service.log）\n');
+        agentServiceError = {
+          code: 'handshake-timeout',
+          message: 'agent-service 启动超时（15s 未就绪）。可重启应用，或在「设置 → 日志」中查看 agent-service.log。',
+        };
+        process.stderr.write(`[main] agent-service 15s 握手超时 → stub：${agentServiceError.message}\n`);
         child.kill();
       }
     }, 15000);
@@ -350,19 +363,28 @@ function trySpawnAgentService(extraEnv: Record<string, string>): AgentServiceSta
       process.stderr.write(chunk);
     });
 
-    child.on('exit', () => {
+    child.on('exit', (code) => {
       clearTimeout(handshakeTimeout);
-      agentServiceStatus = agentServiceStatus === 'ready' ? 'stub' : agentServiceStatus;
+      if (agentServiceStatus === 'ready') {
+        agentServiceStatus = 'stub';
+        agentServiceError = {
+          code: 'exited',
+          message: `agent-service 进程已退出（code=${String(code)}）。可重启应用，或在「设置 → 日志」中查看 agent-service.log。`,
+        };
+      }
       agentServiceChild = null;
     });
-    child.on('error', () => {
+    child.on('error', (err) => {
       clearTimeout(handshakeTimeout);
       agentServiceStatus = 'stub';
+      agentServiceError = { code: 'spawn-error', message: `agent-service 启动失败：${err.message}` };
       agentServiceChild = null;
     });
 
     return agentServiceStatus;
-  } catch {
+  } catch (err) {
+    agentServiceStatus = 'stub';
+    agentServiceError = { code: 'spawn-error', message: `agent-service 启动失败：${(err as Error).message}` };
     return 'stub';
   }
 }
@@ -370,7 +392,7 @@ function trySpawnAgentService(extraEnv: Record<string, string>): AgentServiceSta
 /** 组装对渲染层暴露的网关状态 */
 function buildGatewayStatus(): GatewayStatus {
   const bridgeReady = agentServiceStatus === 'ready' && gatewayClient !== null;
-  const gateway: GatewayStatus['gateway'] = bridgeReady ? 'bridge' : 'mock';
+  const gateway: GatewayStatus['gateway'] = bridgeReady ? 'bridge' : 'none';
   return {
     agentService: agentServiceStatus,
     gateway,
@@ -378,6 +400,7 @@ function buildGatewayStatus(): GatewayStatus {
     sessionsDir: bridgeReady ? sessionsDir() : undefined,
     skillsDir: bridgeReady ? skillsDir() : undefined,
     logsDir: logsDir(),
+    error: bridgeReady ? undefined : (agentServiceError ?? undefined),
   };
 }
 
@@ -390,6 +413,7 @@ function sessionIdOf(req: AgentRequest): string {
 
 /** 异步启动链：读密钥库 → 组装 env → spawn（whenReady 与 restart 共用）。 */
 async function startAgentService(): Promise<void> {
+  agentServiceError = null; // 每次重新握手前清空旧原因，避免恢复后仍显示陈旧错误
   const env = await buildAgentServiceEnv();
   agentServiceStatus = trySpawnAgentService(env);
 }

@@ -1,7 +1,7 @@
 /**
  * useSessions —— 会话历史管理（P-R3 前端重构）。
  *
- * - 列表：主进程 sessions:list（读 sessions/*.jsonl 摘要）；无 bridge（浏览器直开/mock）→ 空列表
+ * - 列表：主进程 sessions:list（读 sessions/*.jsonl 摘要）；无 bridge（浏览器直开）→ 空列表
  * - 当前会话：sessionId 状态（新会话 = s-<uuid>，符合后端 SESSION_ID_RE 白名单）
  * - 切换/新建由 App 编排（配合 useConversation.reset/restore）
  */
