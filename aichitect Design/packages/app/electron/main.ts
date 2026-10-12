@@ -12,13 +12,14 @@
  * TODO-API: agent-service 握手后的状态变化广播（渲染层初始化早于握手时需事件通知）留待
  * 后续轮实现；当前握手成功前渲染层走 UnavailableGatewayClient（显式报错，无离线兜底）。
  */
-import { app, BrowserWindow, ipcMain, WebContents } from 'electron';
+import { app, BrowserWindow, ipcMain, WebContents, type IpcMainInvokeEvent } from 'electron';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn, ChildProcess } from 'node:child_process';
 import { GatewayHttpClient, GatewayHttpError } from './gatewayClient.js';
 import { SecretsService, SECRETS_REFS as REFS } from './secretsService.js';
+import { isTrustedIpcSender } from './ipc-guard.js';
 import type {
   AgentRequest,
   GatewayStatus,
@@ -531,10 +532,54 @@ function sessionFile(sessionId: string): string | null {
 /** 会话文件读取上限（10MB；防异常超大文件读入内存）。 */
 const SESSION_FILE_MAX_BYTES = 10 * 1024 * 1024;
 
-function registerIpcHandlers(): void {
-  ipcMain.handle('gateway:status', (): GatewayStatus => buildGatewayStatus());
+/* ---------------- E9：IPC sender 校验 ---------------- */
 
-  ipcMain.handle('gateway:run', async (_e, req: AgentRequest, runOptions?: RunOptions): Promise<{ requestId: string }> => {
+/**
+ * E9：所有 ipcMain.handle 的调用方校验（防同机其他应用/被注入页面经 IPC 桥调主进程能力）。
+ *
+ * 判定条件（两条同时满足）：
+ * 1. `event.sender` 是本进程唯一窗口的 webContents——排除其他窗口/其他 WebContents；
+ * 2. `event.senderFrame` 是该 webContents 的主 frame——排除渲染进程内 iframe 注入
+ *    （contextBridge 暴露在顶层，iframe 拿不到，但恶意页面仍可能尝试直接 invoke）。
+ *
+ * 模式：默认 **log-only**（仅记录不阻断，避免未知调用路径被一刀切拒）；
+ * 置 `AICH_IPC_STRICT=1` 后改为直接抛错拒绝。
+ */
+const IPC_SENDER_STRICT = process.env.AICH_IPC_STRICT === '1';
+
+function assertTrustedIpcSender(event: IpcMainInvokeEvent, channel: string): void {
+  const trusted = isTrustedIpcSender(event, mainWindow?.webContents ?? null);
+  if (!trusted) {
+    const wc = mainWindow?.webContents;
+    const detail =
+      `[ipc] 非可信调用方 channel=${channel} hasWindow=${!!wc} sameSender=${!!wc && event.sender === wc} ` +
+      `mainFrame=${!!wc && event.senderFrame === wc.mainFrame}`;
+    if (IPC_SENDER_STRICT) {
+      process.stderr.write(`${detail} → 已拒绝\n`);
+      throw new Error('IPC 调用方不受信任');
+    }
+    process.stderr.write(`${detail}（AICH_IPC_STRICT 未开启，当前仅记录）\n`);
+  }
+}
+
+/**
+ * ipcMain.handle 的安全包装：先做 sender 校验，再转给真实处理器。
+ * 处理器签名与直接使用 ipcMain.handle 完全一致（调用点无需改动）。
+ */
+const handleIpc: (
+  channel: string,
+  listener: (event: IpcMainInvokeEvent, ...args: never[]) => unknown,
+) => void = (channel, listener) => {
+  ipcMain.handle(channel, (event, ...args) => {
+    assertTrustedIpcSender(event, channel);
+    return (listener as (e: IpcMainInvokeEvent, ...a: unknown[]) => unknown)(event, ...args);
+  });
+};
+
+function registerIpcHandlers(): void {
+  handleIpc('gateway:status', (): GatewayStatus => buildGatewayStatus());
+
+  handleIpc('gateway:run', async (_e, req: AgentRequest, runOptions?: RunOptions): Promise<{ requestId: string }> => {
     if (!gatewayClient) {
       const { ErrorCode } = await loadShared();
       throw new Error(`${ErrorCode.INTERNAL_ERROR}: 网关未就绪`);
@@ -575,7 +620,7 @@ function registerIpcHandlers(): void {
   });
 
   // R5：上传参考图注册（dataURL → POST /v1/images → imageId 可作 genImage.refImageId/editImage.imageId）
-  ipcMain.handle(
+  handleIpc(
     'upload:image',
     async (_e, sessionId: string, dataUrl: string, name?: string): Promise<{ imageId: string; url: string }> => {
       if (!gatewayClient) {
@@ -595,7 +640,7 @@ function registerIpcHandlers(): void {
     },
   );
 
-  ipcMain.handle('gateway:cancel', async (_e, requestId: string): Promise<void> => {
+  handleIpc('gateway:cancel', async (_e, requestId: string): Promise<void> => {
     if (!gatewayClient) {
       const { ErrorCode } = await loadShared();
       throw new Error(`${ErrorCode.INTERNAL_ERROR}: 网关未就绪`);
@@ -617,7 +662,7 @@ function registerIpcHandlers(): void {
   });
 
   // R6：在途运行查询（渲染层刷新/切回后重连挂接——SSE 终态缓存可回放，结果永不丢）
-  ipcMain.handle(
+  handleIpc(
     'gateway:activeRuns',
     (): Array<{ requestId: string; sessionId: string; kind: string; prompt: string }> =>
       [...requestSessions.entries()]
@@ -626,7 +671,7 @@ function registerIpcHandlers(): void {
   );
 
   // R6：重挂单个请求——在途泵已在广播（仅订阅即可）；已终态则重新拉流回放缓存事件
-  ipcMain.handle('gateway:reattach', (_e, requestId: string): void => {
+  handleIpc('gateway:reattach', (_e, requestId: string): void => {
     if (!gatewayClient || typeof requestId !== 'string' || requestId.length === 0) return;
     if (pumpActive.has(requestId)) return; // 在途：广播已覆盖新窗口
     const sessionId = requestSessions.get(requestId)?.sessionId ?? 'unknown';
@@ -634,7 +679,7 @@ function registerIpcHandlers(): void {
   });
 
   // R6-3：外部链接经系统浏览器打开（Markdown 来源链接可点击；仅 http/https，防任意协议）
-  ipcMain.handle('open:external', (_e, url: string): void => {
+  handleIpc('open:external', (_e, url: string): void => {
     if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) {
       throw new Error('仅支持 http/https 外部链接');
     }
@@ -642,7 +687,7 @@ function registerIpcHandlers(): void {
   });
 
   // R6-3：打开外部技能文件夹（固定 userData/skills，不接受任意路径）；不存在则创建
-  ipcMain.handle('skills:openDir', (): string => {
+  handleIpc('skills:openDir', (): string => {
     const dir = skillsDir();
     fs.mkdirSync(dir, { recursive: true });
     void import('electron').then(({ shell }) => shell.openPath(dir));
@@ -650,12 +695,12 @@ function registerIpcHandlers(): void {
   });
 
   // R6-3：重启本地服务（技能安装/变更后生效）
-  ipcMain.handle('service:restart', async (): Promise<void> => {
+  handleIpc('service:restart', async (): Promise<void> => {
     await restartAgentService();
   });
 
   // R6-4：外部技能列表（GET /v1/skills；渲染层加号菜单「选择技能」）
-  ipcMain.handle('skills:list', async (): Promise<Array<{ name: string; description: string }>> => {
+  handleIpc('skills:list', async (): Promise<Array<{ name: string; description: string }>> => {
     if (!gatewayClient) return [];
     try {
       return await gatewayClient.listSkills(processToken);
@@ -665,12 +710,12 @@ function registerIpcHandlers(): void {
   });
 
   // ---- 密钥管理（safeStorage 无口令方案；用户需求 2026-08-24） ----
-  ipcMain.handle('secrets:status', (): SecretsStatus => {
+  handleIpc('secrets:status', (): SecretsStatus => {
     if (!secrets) throw new Error('密钥服务未初始化');
     return secrets.status();
   });
 
-  ipcMain.handle('secrets:saveKeys', (_e, input: KeyConfigInput): SecretsStatus => {
+  handleIpc('secrets:saveKeys', (_e, input: KeyConfigInput): SecretsStatus => {
     if (!secrets) throw new Error('密钥服务未初始化');
     // 保存（含清除）→ 重启 agent-service 使注入生效；同步返回状态
     const status = secrets.saveKeys(input);
@@ -679,7 +724,7 @@ function registerIpcHandlers(): void {
   });
 
   // R6-6：保存多模型条目（全量替换 + 激活 id）→ 重启生效
-  ipcMain.handle(
+  handleIpc(
     'secrets:saveModels',
     (
       _e,
@@ -694,7 +739,7 @@ function registerIpcHandlers(): void {
   );
 
   // R6-14：保存多图像服务商条目（保存 → 重启服务生效）
-  ipcMain.handle(
+  handleIpc(
     'secrets:saveImageModels',
     (
       _e,
@@ -709,24 +754,24 @@ function registerIpcHandlers(): void {
   );
 
   // R6-14：无边框窗口控制（ZCode 同构自绘按钮；win:chromeChanged 推送见 createWindow）
-  ipcMain.handle('win:minimize', (): void => {
+  handleIpc('win:minimize', (): void => {
     BrowserWindow.getFocusedWindow()?.minimize();
   });
-  ipcMain.handle('win:toggleMaximize', (): void => {
+  handleIpc('win:toggleMaximize', (): void => {
     const w = BrowserWindow.getFocusedWindow();
     if (!w) return;
     if (w.isMaximized()) w.unmaximize();
     else w.maximize();
   });
-  ipcMain.handle('win:close', (): void => {
+  handleIpc('win:close', (): void => {
     BrowserWindow.getFocusedWindow()?.close();
   });
-  ipcMain.handle('win:chromeState', (): { isMaximized: boolean } => ({
+  handleIpc('win:chromeState', (): { isMaximized: boolean } => ({
     isMaximized: BrowserWindow.getFocusedWindow()?.isMaximized() ?? false,
   }));
 
   // R6-6：自定义会话目录（保存 → 重启服务生效；图像白名单/sessions IPC 同源切换）
-  ipcMain.handle('config:setSessionsDir', async (_e, dir: string): Promise<void> => {
+  handleIpc('config:setSessionsDir', async (_e, dir: string): Promise<void> => {
     if (!secrets) throw new Error('密钥服务未初始化');
     if (typeof dir !== 'string') throw new Error('路径必须为字符串');
     if (dir.length > 0 && !path.isAbsolute(dir)) throw new Error('必须为绝对路径');
@@ -735,7 +780,7 @@ function registerIpcHandlers(): void {
   });
 
   // R6-7：文件夹选择对话框（会话目录自定义；返回所选路径或 null）
-  ipcMain.handle('config:browseSessionsDir', async (): Promise<string | null> => {
+  handleIpc('config:browseSessionsDir', async (): Promise<string | null> => {
     const { dialog } = await import('electron');
     const result = await dialog.showOpenDialog({
       title: '选择会话数据存储位置',
@@ -745,14 +790,14 @@ function registerIpcHandlers(): void {
   });
 
   // R6-9：Agent Loops 日志开关（写 settings，重启服务生效）
-  ipcMain.handle('looplog:setEnabled', async (_e, enabled: boolean): Promise<void> => {
+  handleIpc('looplog:setEnabled', async (_e, enabled: boolean): Promise<void> => {
     if (!secrets) throw new Error('密钥服务未初始化');
     secrets.setSetting('app.loopLog', enabled ? '1' : '0');
     await restartAgentService();
   });
 
   // R6-13：单次运行工具调用轮次上限（设置 → Agent；保存后重启服务生效）
-  ipcMain.handle('agent:setMaxToolCalls', (_e, value: number): SecretsStatus => {
+  handleIpc('agent:setMaxToolCalls', (_e, value: number): SecretsStatus => {
     if (!secrets) throw new Error('密钥服务未初始化');
     const n = Math.floor(Number(value));
     if (!Number.isFinite(n) || n < 1 || n > 200) {
@@ -764,7 +809,7 @@ function registerIpcHandlers(): void {
   });
 
   // R6-6：打开 Agent 日志文件夹（自动创建）
-  ipcMain.handle('logs:openDir', (): string => {
+  handleIpc('logs:openDir', (): string => {
     const dir = logsDir();
     fs.mkdirSync(dir, { recursive: true });
     void import('electron').then(({ shell }) => shell.openPath(dir));
@@ -772,7 +817,7 @@ function registerIpcHandlers(): void {
   });
 
   // ---- 会话历史（P-R3 前端重构：主进程读 sessions/*.jsonl） ----
-  ipcMain.handle('sessions:list', (): SessionSummary[] => {
+  handleIpc('sessions:list', (): SessionSummary[] => {
     const dir = sessionsDir();
     if (!fs.existsSync(dir)) return [];
     const summaries: SessionSummary[] = [];
@@ -790,7 +835,7 @@ function registerIpcHandlers(): void {
     return summaries;
   });
 
-  ipcMain.handle('sessions:read', (_e, sessionId: string): SessionContent => {
+  handleIpc('sessions:read', (_e, sessionId: string): SessionContent => {
     const file = sessionFile(sessionId);
     // 新会话尚无 jsonl → 返回空内容（渲染层视为空白，不抛错避免 IPC 噪音日志）
     if (!file || !fs.existsSync(file)) {
@@ -809,7 +854,7 @@ function registerIpcHandlers(): void {
   });
 
   // R6-9：删除历史会话（jsonl + meta.db 级联：方案/图像/费用/session 行）
-  ipcMain.handle('sessions:delete', (_e, sessionId: string): { ok: boolean; removed: number } => {
+  handleIpc('sessions:delete', (_e, sessionId: string): { ok: boolean; removed: number } => {
     const file = sessionFile(sessionId);
     let removed = 0;
     if (file && fs.existsSync(file)) {
@@ -832,7 +877,7 @@ function registerIpcHandlers(): void {
   // R7-2 反馈：画布删除 = 仅移出画布——会话 jsonl 中该 image 条目打 canvasRemoved 标记（原位改写，
   // 原子重写）；对话消息的图片引用（user.imageIds 回填）与磁盘文件一律不动，对话内容不受影响。
   // 幂等：重复删除 / 未注册 id（画布复制件）无匹配行时静默成功。
-  ipcMain.handle(
+  handleIpc(
     'sessions:deleteImage',
     (_e, sessionId: string, imageId: string): { ok: boolean } => {
       if (typeof sessionId !== 'string' || !SESSION_ID_RE.test(sessionId)) {
@@ -874,7 +919,7 @@ function registerIpcHandlers(): void {
   );
 
   // ---- G8：file:// 图像兜底（白名单读取 → dataURL；dev http 源无法直接显示 file:// img） ----
-  ipcMain.handle('image:readDataUrl', (_e, uri: string): string => {
+  handleIpc('image:readDataUrl', (_e, uri: string): string => {
     if (typeof uri !== 'string' || uri.length === 0) {
       throw new Error('图像 URI 非法');
     }
