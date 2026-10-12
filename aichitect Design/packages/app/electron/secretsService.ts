@@ -7,8 +7,10 @@
  * - settings（baseUrl/model）：非密，明文 JSON 同文件；
  * - safeStorage 不可用（异构 Linux 无 libsecret 等）：fail-closed 拒绝保存密钥（设置项仍可存）。
  *
- * 边界：密钥与操作系统用户账户绑定（换用户/换机不可解密——符合本产品「本地优先」定位）；
- * 原 @aichdesign/keystore（口令派生方案）保留为独立交付，app 不再使用（登记于计划文档）。
+ * 边界：密钥与操作系统用户账户绑定（换用户/换机不可解密——符合本产品「本地优先」定位）。
+ *
+ * 注：早期曾有一套基于口令派生（scrypt + AES-256-GCM）的密钥库实现，因本产品「无需建口令」
+ * 的要求而由本实现取代，该包已移除。
  */
 
 import { safeStorage } from 'electron';
