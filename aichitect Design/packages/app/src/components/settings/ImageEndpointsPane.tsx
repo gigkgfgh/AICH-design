@@ -5,6 +5,7 @@
  *   配置"保存成功"却从未写入——本页有独立保存通道 secrets:saveImageModels。
  * - 多服务商条目 + 激活 radio；旧单条目配置由主进程懒迁移为首条目，本页直接可见可改。
  * - 语义：apiKey undefined = 保留原 Key；'' = 清除；非空 = 覆盖。
+ * - 保存走配置热重载（不重启本地服务）；删空列表也可保存——用于清除全部条目。
  */
 import { useEffect, useState, type ReactElement } from 'react';
 import type { SecretsStatus } from '../../types/contracts';
@@ -79,10 +80,11 @@ export function ImageEndpointsPane({ secrets, noBridge, onSaved }: ImageEndpoint
       setModels(st.imageModels.map((m) => ({ id: m.id, name: m.name, url: m.url, editUrl: m.editUrl, model: m.model, hasKey: m.hasKey })));
       setActiveId(st.activeImageModelId);
       onSaved(st);
-      setNotice({
-        kind: 'ok',
-        text: `已保存 ${st.imageModels.length} 个图像端点，本地服务重启生效中…`,
-      });
+      setNotice(
+        st.imageModels.length === 0
+          ? { kind: 'ok', text: '已保存：未配置任何图像端点。图像生成/编辑将提示未配置，已即时生效。' }
+          : { kind: 'ok', text: `已保存 ${st.imageModels.length} 个图像端点，已即时生效` },
+      );
     } catch (err) {
       setNotice({ kind: 'err', text: `保存失败：${(err as Error).message}` });
     } finally {
@@ -170,9 +172,12 @@ export function ImageEndpointsPane({ secrets, noBridge, onSaved }: ImageEndpoint
       >
         ＋ 添加图像端点
       </button>
+      {models.length === 0 && (
+        <p className="settings__hint">当前未配置任何图像端点。图像生成/编辑会提示未配置；保存空配置可清除已保存的全部条目与 Key。</p>
+      )}
       {notice !== null && <p className={`settings__notice ${notice.kind === 'ok' ? 'is-ok' : 'is-err'}`}>{notice.text}</p>}
-      <button type="button" className="settings__btn" disabled={busy || models.length === 0} onClick={() => void handleSave()}>
-        {busy ? '保存中…' : '保存并应用（重启本地服务）'}
+      <button type="button" className="settings__btn" disabled={busy} onClick={() => void handleSave()}>
+        {busy ? '保存中…' : models.length === 0 ? '保存并清除全部端点' : '保存并即时生效'}
       </button>
     </div>
   );

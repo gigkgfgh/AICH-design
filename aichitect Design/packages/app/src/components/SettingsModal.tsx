@@ -105,7 +105,7 @@ export function SettingsModal(props: SettingsModalProps): ReactElement {
         searchProvider,
         searchBaseUrl: searchProvider === 'searxng' ? searchBaseUrl.trim() : '',
       });
-      setNotice({ section: 'search', kind: 'ok', text: '已保存，本地服务重启生效中…' });
+      setNotice({ section: 'search', kind: 'ok', text: '已保存，已即时生效' });
       await refreshSecrets();
       onGatewayRefresh?.();
     } catch (err) {

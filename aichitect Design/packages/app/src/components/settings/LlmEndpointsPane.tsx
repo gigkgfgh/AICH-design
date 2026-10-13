@@ -4,7 +4,8 @@
  * - 状态自持（不再上提 Modal）；secrets 身份变化时同步表单，保存后回写。
  * - 多模型来源条目：每条一张卡片（名称/BaseURL/模型 id + 思考档/Key 留空保持不变）；
  *   StatusDot 绿 = Key 已配置；「设为默认」radio 决定激活条目；删除需确认。
- * - 显式保存（busy/校验失败禁用）走 secrets:saveModels，保存即重启服务。
+ * - 显式保存（busy/校验失败禁用）走 secrets:saveModels；主进程改为配置热重载，
+ *   保存即生效（不重启本地服务、不打断在途对话）。删空列表也可保存——用于清除全部条目。
  */
 import { useEffect, useState, type ReactElement } from 'react';
 import type { SecretsStatus } from '../../types/contracts';
@@ -92,7 +93,11 @@ export function LlmEndpointsPane({ secrets, noBridge, onSaved }: LlmEndpointsPan
       setModels(st.models.map((m) => ({ id: m.id, name: m.name, baseUrl: m.baseUrl, model: m.model, thinking: m.thinking, imageInput: m.imageInput, contextWindow: m.contextWindow > 0 ? String(m.contextWindow) : '', hasKey: m.hasKey })));
       setActiveModelId(st.activeModelId);
       onSaved(st);
-      setNotice({ kind: 'ok', text: `已保存 ${st.models.length} 个模型条目，本地服务重启生效中…` });
+      setNotice(
+        st.models.length === 0
+          ? { kind: 'ok', text: '已保存：未配置任何模型端点。对话功能将提示未配置，已即时生效。' }
+          : { kind: 'ok', text: `已保存 ${st.models.length} 个模型条目，已即时生效` },
+      );
     } catch (err) {
       setNotice({ kind: 'err', text: `保存失败：${(err as Error).message}` });
     } finally {
@@ -210,8 +215,11 @@ export function LlmEndpointsPane({ secrets, noBridge, onSaved }: LlmEndpointsPan
         ＋ 添加模型
       </button>
       {notice !== null && <p className={`settings__notice ${notice.kind === 'ok' ? 'is-ok' : 'is-err'}`}>{notice.text}</p>}
-      <button type="button" className="settings__btn" disabled={busy || models.length === 0} onClick={() => void handleSave()}>
-        {busy ? '保存中…' : '保存并应用（重启本地服务）'}
+      {models.length === 0 && (
+        <p className="settings__hint">当前未配置任何模型端点。对话功能会提示未配置；保存空配置可清除已保存的全部条目与 Key。</p>
+      )}
+      <button type="button" className="settings__btn" disabled={busy} onClick={() => void handleSave()}>
+        {busy ? '保存中…' : models.length === 0 ? '保存并清除全部端点' : '保存并即时生效'}
       </button>
     </div>
   );
