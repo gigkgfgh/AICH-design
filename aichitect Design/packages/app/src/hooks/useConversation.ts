@@ -8,7 +8,7 @@
  * - 会话切换时 reset() 清空本地状态
  */
 
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   AgentRequest,
   AgentResponse,
@@ -23,6 +23,7 @@ import type {
 } from '../types/contracts';
 import type { GatewayClient } from '../gateway/types';
 import { isGatewayAvailable } from '../gateway/unavailableGateway';
+import { shouldFinalizeOnWatchdog, watchdogTimeoutMessage, STREAM_WATCHDOG_MS } from '../lib/streamWatchdog';
 
 /** R5：主 Agent 意图路由（显式选定子 agent 时不再路由）——导出供单测。R7-1：默认 main。 */
 export function classifyAgentIntent(text: string): SubAgentId {
@@ -140,11 +141,27 @@ export function useConversation(
   const [usage, setUsage] = useState<SessionUsage | null>(null);
 
   const unsubRef = useRef<(() => void) | null>(null);
+  // 自愈看门狗（R7-3）：见 WATCHDOG 说明。timer 在每次订阅时武装、终态时解除。
+  // activeRequestId 独立于 activeRunRef —— reattachActive 路径也会订阅流，
+  // 但不写 activeRunRef（那里没有"停止"语义），若复用会导致看门狗误判为已切换而放弃。
+  const watchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const watchedRequestIdRef = useRef<string | null>(null);
   // R6-19：在途请求（最新一条）——主动停止依据；userCancelled 记录用户主动打断的消息（中性终态，不进重试链）。
   const activeRunRef = useRef<{ requestId: string; assistantId: string } | null>(null);
   const userCancelledRef = useRef<Set<string>>(new Set());
   // 当前图像快照（构建请求时读取，避免闭包过期）
   const currentImageRef = useRef<ImageVersion | null>(null);
+
+  // 卸载时解除定时器：否则组件销毁后定时器仍会触发 setState（幽灵更新 + 内存泄漏）。
+  useEffect(
+    () => () => {
+      if (watchdogRef.current !== null) {
+        clearTimeout(watchdogRef.current);
+        watchdogRef.current = null;
+      }
+    },
+    [],
+  );
 
   const currentImage = useMemo(
     () => images.find((img) => img.imageId === currentImageId) ?? null,
@@ -170,13 +187,71 @@ export function useConversation(
     }));
   }, []);
 
-  const finishStream = useCallback(() => {
+  /**
+ * R7-3 自愈看门狗：兜底「终态永远不来」的场景。
+ *
+ * 症状：输入框光标消失、无法输入——因为 ChatPanel 在 streaming 期间把 textarea
+ * 设为 disabled，而 streaming 只有 onDone/onError 才会复位。
+ *
+ * 失效路径（主进程侧看似完备，实际仍有缝隙）：
+ * - IpcGatewayClient.subscribe 是**纯被动监听**，不保证收到终态；
+ * - 主进程 broadcastEnvelope 依赖 BrowserWindow 存活，窗口重建/重载期间推送会丢；
+ * - 网关重连、配置热重载、服务重启期间的在途 requestId 无人再泵流；
+ * - SSE 连接被中间层静默丢弃时，既无 done 也无 error。
+ *
+ * 一旦命中，streaming 永久为 true → 输入框永久禁用 → 用户只能重启应用。
+ * 故渲染层不依赖对端正确性：订阅成功即武装定时器，终态到达则解除。
+ *
+ * 时限取5 分钟：远大于任何正常响应耗时（长文本生成通常数十秒），
+ * 又不至于让用户等太久才有反馈；触发后明确提示「已中断」而非静默恢复。
+ *
+ * 判定逻辑与文案抽到 lib/streamWatchdog.ts（纯函数，便于无 React 环境单测）。
+ */
+
+
+const finishStream = useCallback(() => {
+    if (watchdogRef.current !== null) {
+      clearTimeout(watchdogRef.current);
+      watchdogRef.current = null;
+    }
+    watchedRequestIdRef.current = null;
     unsubRef.current?.();
     unsubRef.current = null;
     activeRunRef.current = null;
     setStreaming(false);
     options.onSessionTouched?.();
   }, [options]);
+
+  /** 武装看门狗；已有一只在跑则先解除（顺带重置计时）。 */
+  const armWatchdog = useCallback(
+    (assistantId: string, requestId: string) => {
+      if (watchdogRef.current !== null) clearTimeout(watchdogRef.current);
+      watchedRequestIdRef.current = requestId;
+      watchdogRef.current = setTimeout(() => {
+        watchdogRef.current = null;
+        // 只在仍处于该 run 时才收尾，避免误伤后续新请求
+        if (!shouldFinalizeOnWatchdog(watchedRequestIdRef.current, requestId)) return;
+        watchedRequestIdRef.current = null;
+        // 不登记重试上下文：超时多半源于网关/网络异常，重跑大概率同样超时；
+        // 且此处拿不到原始 request/options（见 startRun 入参），强行重试反而误导。
+        failedRef.current.delete(assistantId);
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === assistantId
+              ? {
+                  ...m,
+                  text: `${m.text}${watchdogTimeoutMessage(STREAM_WATCHDOG_MS)}`,
+                  isError: true,
+                  retry: undefined,
+                }
+              : m,
+          ),
+        );
+        finishStream();
+      }, STREAM_WATCHDOG_MS);
+    },
+    [finishStream],
+  );
 
   /** 图像响应入树（网关 done.image 单一来源） */
   const addImageResponse = useCallback((response: Extract<AgentResponse, { kind: 'image' }>) => {
@@ -220,6 +295,7 @@ export function useConversation(
 
       try {
         const { requestId } = await clientRef.current.run(request);
+        armWatchdog('', requestId);
         unsubRef.current = clientRef.current.subscribe(requestId, {
           onDelta: () => undefined,
           onUsage: accumulateUsage,
@@ -230,6 +306,11 @@ export function useConversation(
               setImageError(`${response.code}：${response.message}`);
               setImageLoading(false);
             }
+            if (watchdogRef.current !== null) {
+              clearTimeout(watchdogRef.current);
+              watchdogRef.current = null;
+            }
+            watchedRequestIdRef.current = null;
             unsubRef.current?.();
             unsubRef.current = null;
             options.onSessionTouched?.();
@@ -237,6 +318,11 @@ export function useConversation(
           onError: (err) => {
             setImageError(`${err.code}：${err.message}`);
             setImageLoading(false);
+            if (watchdogRef.current !== null) {
+              clearTimeout(watchdogRef.current);
+              watchdogRef.current = null;
+            }
+            watchedRequestIdRef.current = null;
             unsubRef.current?.();
             unsubRef.current = null;
           },
@@ -411,6 +497,7 @@ export function useConversation(
             try {
               const { requestId: rid2 } = await clientRef.current.run(kindReq, { agent: dispatchTarget });
               activeRunRef.current = { requestId: rid2, assistantId };
+              armWatchdog(assistantId2, rid2);
               unsubRef.current = clientRef.current.subscribe(rid2, { onDelta: appendDelta2, onTool: appendTool2, onUsage: accumulateUsage, onDone, onError });
             } catch (err) {
               failAttempt(`接续失败：${(err as Error).message}`);
@@ -442,6 +529,7 @@ export function useConversation(
         try {
           const { requestId } = await clientRef.current.run(request, runOptions);
           activeRunRef.current = { requestId, assistantId };
+          armWatchdog(assistantId, requestId);
           unsubRef.current = clientRef.current.subscribe(requestId, { onDelta: appendDelta, onThinking: appendThinking, onTool: appendTool, onUsage: accumulateUsage, onDone, onError });
         } catch (err) {
           failAttempt(`请求失败：${(err as Error).message}`);
@@ -594,6 +682,11 @@ export function useConversation(
   }, []);
 
   const reset = useCallback(() => {
+    if (watchdogRef.current !== null) {
+      clearTimeout(watchdogRef.current);
+      watchdogRef.current = null;
+    }
+    watchedRequestIdRef.current = null;
     unsubRef.current?.();
     unsubRef.current = null;
     setMessages([]);
@@ -606,6 +699,13 @@ export function useConversation(
   }, []);
 
   const restore = useCallback((content: SessionContent) => {
+    // 必须解除看门狗：切换/重载会话后旧 run 已无意义，若定时器残留，
+    // 到期会误改**新会话**的消息文本（表现为凭空多出一句"已中断"）。
+    if (watchdogRef.current !== null) {
+      clearTimeout(watchdogRef.current);
+      watchdogRef.current = null;
+    }
+    watchedRequestIdRef.current = null;
     unsubRef.current?.();
     unsubRef.current = null;
     setStreaming(false);
@@ -676,10 +776,11 @@ export function useConversation(
         const onError = (err: { code: string; message: string }): void => {
           settle(`出错了（${err.code}）：${err.message}`, true);
         };
+        armWatchdog(assistantIds.get(requestId) ?? '', requestId);
         void clientRef.current.subscribe(requestId, { onDelta: appendDelta, onUsage: accumulateUsage, onDone, onError });
       }
     },
-    [streaming, clientRef, addImageResponse, finishStream],
+    [streaming, clientRef, addImageResponse, finishStream, armWatchdog],
   );
 
   // R7-2 补：画布已有图像（如 idle 会话先传图）也构成"工作态"——否则图片入册后画布不渲染，用户看不到图

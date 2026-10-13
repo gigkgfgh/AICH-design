@@ -294,8 +294,11 @@ export function ChatPanel(props: ChatPanelProps): ReactElement {
           className="chat-panel__input chat-panel__textarea"
           value={input}
           rows={1}
-          placeholder={streaming ? '等待生成完成…' : '描述户型或修改指令，Enter 发送，Shift+Enter 换行'}
-          disabled={streaming}
+          placeholder={streaming ? '生成中，可继续输入下一条（Enter 发送）…' : '描述户型或修改指令，Enter 发送，Shift+Enter 换行'}
+          // 生成期间**不禁用**输入框：disabled 会让 textarea 失焦、样式置灰，
+          // 用户观感上就是「光标消失、无法输入」——尤其当上一次请求因异常
+          // 未收到终态、streaming 卡住时，输入框会被永久锁死。
+          // 改为始终可输入、仅通过 canSend 阻止发送（下方发送按钮已按态禁用）。
           onChange={(e) => {
             setInput(e.target.value);
             autoResize(e.target);
