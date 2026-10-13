@@ -17,3 +17,19 @@ Thumbs.db
 .workbuddy/
 # 项目文档（本地维护，不入库）
 aichitect Design/docs/
+
+# 本地密钥与环境（绝不入库；与 aichitect Design/.gitignore 保持一致，双保险）
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.ppk
+id_rsa
+id_ed25519
+secrets.json
+*.db
+*.db-wal
+*.db-shm
