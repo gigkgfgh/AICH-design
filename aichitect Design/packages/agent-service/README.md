@@ -93,7 +93,26 @@ curl -X POST http://127.0.0.1:PORT/v1/cancel -H "Authorization: Bearer $TOKEN" \
 # 健康 / 指标（进程级 token）
 curl http://127.0.0.1:PORT/v1/health  -H "Authorization: Bearer $PROC_TOKEN"
 curl http://127.0.0.1:PORT/v1/metrics -H "Authorization: Bearer $PROC_TOKEN"
+
+# 配置热重载（进程级 token）：按最新环境变量重建 adapter/imagePort
+# 不重建服务器——端口、会话 token、在途 run 均不变；成功时 stdout 输出
+# AICH_GATEWAY_RELOADY 行。未启用该能力时返回 501，调用方应回退进程重启。
+curl -X POST http://127.0.0.1:PORT/v1/reload -H "Authorization: Bearer $PROC_TOKEN"
 ```
+
+## 配置热重载
+
+桌面端修改端点/密钥后调用 `POST /v1/reload`，由服务自行重建 adapter，
+**不杀进程**：端口不变、会话 token 不失效、在途请求跑完不受影响
+（reload 不打断已发出的 run，新请求走新配置）。
+
+实现要点：`SwappableAdapter`（`src/runtime/swappable-adapter.ts`）把生效中的
+adapter 收敛到可替换槽位，`RunManager`/`RetryingRuntime` 始终持有同一实例。
+`loadSkill`/`registerExtension` 动态转发到当前 adapter——若在构造时绑定，
+重载后新注册的技能会丢在旧 adapter 上。
+
+**前提**：配置经进程环境变量注入（`loadConfig()` 只读 `process.env`），
+调用方必须先把新值写回环境变量，否则 reload 读到的仍是旧配置。
 
 统一错误响应：`{ "code": "...", "message": "...", "data": ... }`。
 错误码唯一权威在 `packages/shared/src/errors.ts`（9 码，HTTP 映射以 `httpStatusFor()` 为准），禁止散用字面量。

@@ -42,7 +42,7 @@ npm run dev        # 渲染层 vite(5173) + electron 壳，热更新
 > `npm install --ignore-scripts` 会跳过 postinstall，各包 `dist/` 不会生成，
 > 届时 typecheck/test 会报 `Cannot find module '@aichdesign/shared'`，需手动 `npm run build`。
 
-端点配置：启动后在「设置 → LLM 端点 / 图像端点」填写并保存（自动重启本地服务生效）。
+端点配置：启动后在「设置 → LLM 端点 / 图像端点」填写并保存，**保存即生效**（服务进程内热重载配置，不重启本地服务、不打断在途对话）。删除全部条目同样可保存，用于清除已存配置。
 密钥经 Electron `safeStorage`（Windows DPAPI / macOS Keychain / Linux libsecret）加密存放，不落明文。
 
 ## 常用命令
