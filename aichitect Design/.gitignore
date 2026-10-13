@@ -1,25 +1,52 @@
-# 依赖与构建产物
+# 依赖
 node_modules/
-dist/
-build/
-coverage/
-*.log
-*.tsbuildinfo
 
-# 本地固定依赖归档（pi-agent 离线 tgz，防误入版本库）
+# 构建产物（一律不入库；安装时经 root postinstall 自动构建，见 package.json）
+dist/
+dist-electron/
+dist-renderer/
+release/
+out/
+
+# 测试与缓存
+coverage/
+*.tsbuildinfo
+.vite/
+.eslintcache
+
+# 本地固定依赖归档（离线 tgz；pi-agent 已改为 registry 依赖，不再需要）
 *.tgz
-# GitHub codeload 归档（与已解压的 pi-main/ 重复）
 *.tar.gz
+
 # 临时补丁脚本（会话内生成、用后即弃）
 .zcode-tmp-*
+_r*_*.py
 
-# 运行时数据（会话 jsonl / 埋点 / 本地测试数据）
+# 运行时数据（会话 jsonl / 埋点 / 本地测试数据 / 密钥库）
 .data/
 packages/*/.data/
+*.db
+*.db-wal
+*.db-shm
 
 # opencode 运行时产物
+.opencode/
 .opencode/node_modules/
 
-# 系统文件
+# 本地密钥与环境（绝不入库）
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+secrets.json
+
+# 系统与编辑器文件
 .DS_Store
 Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+*.swp

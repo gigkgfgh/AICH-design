@@ -10,6 +10,7 @@
     "node": ">=22.19.0"
   },
   "scripts": {
+    "postinstall": "npm run build --workspace @aichdesign/shared && npm run build --workspace @aichdesign/extensions && npm run build --workspace @aichdesign/storage && npm run build --workspace @aichdesign/agent-service && npm run build:electron --workspace @aichdesign/app",
     "build": "npm run build --workspaces --if-present",
     "lint": "npm run lint --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",

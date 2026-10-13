@@ -953,6 +953,9 @@ function isTrustedDevUrl(url: string): boolean {
   }
 }
 
+/** E6：dev 模式默认 dev server（与 vite.config.ts server.port/strictPort 对齐）。 */
+const DEFAULT_DEV_SERVER_URL = 'http://127.0.0.1:5173';
+
 function createWindow(): void {
   // R6-14：无边框窗口（ZCode 同构）——Windows/Linux frame:false（渲染层自绘窗口按钮），
   // macOS 保留系统红绿灯（titleBarStyle hidden）。backgroundColor 与暗色主题一致。
@@ -984,10 +987,19 @@ function createWindow(): void {
   mainWindow.on('maximize', sendChromeState);
   mainWindow.on('unmaximize', sendChromeState);
 
-  // 开发：加载 Vite dev server（仅可信本机地址）；否则加载 packages/app/dist-renderer 产物
-  const devServerUrl = process.env.VITE_DEV_SERVER_URL;
+  // 开发：加载 Vite dev server（仅可信本机地址）；否则加载 packages/app/dist-renderer 产物。
+  // E6：dev 下未显式给 VITE_DEV_SERVER_URL 时，默认指向 vite 固定端口 5173
+  // （vite.config.ts strictPort），使 `npm run dev` 的热更新默认生效，而非静默退回
+  // dist-renderer 旧产物（表现为"改了代码不刷新"）。
+  const envDevUrl = process.env.VITE_DEV_SERVER_URL;
+  const devServerUrl =
+    envDevUrl && isTrustedDevUrl(envDevUrl)
+      ? envDevUrl
+      : !app.isPackaged && isTrustedDevUrl(DEFAULT_DEV_SERVER_URL)
+        ? DEFAULT_DEV_SERVER_URL
+        : null;
   const rendererHtml = path.join(__dirname, '..', '..', 'dist-renderer', 'index.html');
-  if (devServerUrl && isTrustedDevUrl(devServerUrl)) {
+  if (devServerUrl) {
     void mainWindow.loadURL(devServerUrl);
   } else {
     void mainWindow.loadFile(rendererHtml);
