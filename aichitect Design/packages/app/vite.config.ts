@@ -12,6 +12,10 @@ export default defineConfig({
   plugins: [react()],
   base: './',
   server: {
+    // 必须显式绑IPv4 回环：不设时vite 5 只监听 [::1]（IPv6 localhost），
+    // 而 Electron 主进程探测的是 http://127.0.0.1:5173 —— 地址族不同，
+    // 探测恒为 "fetch failed"，表现为 dev 窗口加载不到 dev server。
+    host: '127.0.0.1',
     port: 5173,
     strictPort: true
   },

@@ -983,11 +983,12 @@ function registerIpcHandlers(): void {
   });
 }
 
-/** dev server URL 来源校验（R015）：仅信任本机 loopback HTTP 地址，防任意 URL 加载 */
+/** dev server URL 来源校验（R015）：仅信任本机 loopback HTTP 地址，防任意 URL 加载。 */
 function isTrustedDevUrl(url: string): boolean {
   try {
     const u = new URL(url);
-    return u.protocol === 'http:' && (u.hostname === 'localhost' || u.hostname === '127.0.0.1');
+    // [::1] 在 URL 解析后 hostname 为 "[::1]"（带方括号）。
+    return u.protocol === 'http:' && (u.hostname === 'localhost' || u.hostname === '127.0.0.1' || u.hostname === '[::1]');
   } catch {
     return false;
   }
@@ -1006,25 +1007,58 @@ const DEV_SERVER_POLL_MS = 250;
  * 用 GET 而非仅 TCP 探测：vite 端口监听就绪即视为可用，避免误判。
  * 失败重试由调用方决定（回退 dist-renderer），此处只报告是否就绪。
  */
-async function waitForDevServer(url: string, timeoutMs: number): Promise<boolean> {
+/**
+ * 轮询等待 dev server 就绪，返回**实际可用的 URL**（首包即返回，不等 index 完整）。
+ *
+ * 地址族问题（真实踩过）：vite 未显式配 `server.host` 时只监听 `[::1]`（IPv6 回环），
+ * 而探测若用 `http://127.0.0.1:5173`（IPv4），netstat 显示端口在监听、探测却恒为
+ * `fetch failed` —— 地址族不同。故此处对每个候选地址都试，任一可用即返回。
+ *
+ * 候选顺序：优先用传入的地址（尊重 VITE_DEV_SERVER_URL），再补同端口的其它回环写法。
+ * 失败时由调用方决定（回退 dist-renderer），此处只报告是否就绪。
+ */
+async function waitForDevServer(url: string, timeoutMs: number): Promise<string | null> {
+  const candidates = devServerCandidates(url);
   const deadline = Date.now() + timeoutMs;
-  let lastError = 'unknown';
+  const lastErrors: string[] = [];
   while (Date.now() < deadline) {
-    if (mainWindow === null || mainWindow.isDestroyed()) return false;
-    try {
-      const res = await fetch(url, { method: 'GET' });
-      if (res.status < 500) {
-        await res.body?.cancel().catch(() => {});
-        return true;
+    if (mainWindow === null || mainWindow.isDestroyed()) return null;
+    for (const candidate of candidates) {
+      try {
+        const res = await fetch(candidate, { method: 'GET' });
+        if (res.status < 500) {
+          await res.body?.cancel().catch(() => {});
+          if (candidate !== url) {
+            process.stderr.write(`[main] dev server 经 ${candidate} 就绪（配置地址 ${url} 不可达）。\n`);
+          }
+          return candidate;
+        }
+        lastErrors.push(`${candidate} → HTTP ${res.status}`);
+      } catch (err) {
+        lastErrors.push(`${candidate} → ${(err as Error).message}`);
       }
-      lastError = `HTTP ${res.status}`;
-    } catch (err) {
-      lastError = (err as Error).message;
     }
     await new Promise((resolve) => setTimeout(resolve, DEV_SERVER_POLL_MS));
   }
-  process.stderr.write(`[main] dev server ${url} 未就绪：${lastError}\n`);
-  return false;
+  process.stderr.write(`[main] dev server 未就绪：\n${lastErrors.slice(-4).map((e) => `    ${e}`).join('\n')}\n`);
+  return null;
+}
+
+/** 同一端口的各回环写法（IPv4/IPv6/localhost），去重且保持顺序。 */
+function devServerCandidates(url: string): string[] {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return [url];
+  }
+  const port = parsed.port || '80';
+  const out = [url];
+  for (const host of ['127.0.0.1', '[::1]', 'localhost']) {
+    const candidate = `${parsed.protocol}//${host}:${port}`;
+    if (!out.includes(candidate)) out.push(candidate);
+  }
+  return out;
 }
 
 function createWindow(): void {
@@ -1074,9 +1108,6 @@ function createWindow(): void {
   // （vite.config.ts strictPort），使 `npm run dev` 的热更新默认生效，而非静默退回
   // dist-renderer 旧产物（表现为"改了代码不刷新"）。
   //
-  // dev server 可能尚未就绪（`concurrently` 并行启动，electron 常早于 vite ready），
-  // 或端口被占用导致 vite 起不来。loadURL 失败不会自动重试——窗口会永久停在错误页，
-  // 表现为"黑屏"。故先轮询等待就绪，超时再回退 dist-renderer 产物。
   const envDevUrl = process.env.VITE_DEV_SERVER_URL;
   const devServerUrl =
     envDevUrl && isTrustedDevUrl(envDevUrl)
@@ -1085,15 +1116,13 @@ function createWindow(): void {
         ? DEFAULT_DEV_SERVER_URL
         : null;
   const rendererHtml = path.join(__dirname, '..', '..', 'dist-renderer', 'index.html');
-  // dev server 可能尚未就绪（`concurrently` 并行启动，electron 通常早于 vite ready
-  // 数秒）。`loadURL` 失败不会自动重试，等待窗口会永久停在错误页——这是"黑屏"的
-  // 直接原因。故先轮询等待就绪，再加载；超时则回退 dist-renderer 产物。
   void (async () => {
     if (devServerUrl) {
+      // ready 是**实际可用**的地址（可能与 devServerUrl 不同，见 devServerCandidates）
       const ready = await waitForDevServer(devServerUrl, DEV_SERVER_WAIT_MS);
       if (!mainWindow || mainWindow.isDestroyed()) return;
-      if (ready) {
-        void mainWindow.loadURL(devServerUrl).catch((err: unknown) => {
+      if (ready !== null) {
+        void mainWindow.loadURL(ready).catch((err: unknown) => {
           process.stderr.write(
             `[main] dev server 在就绪后仍加载失败（${(err as Error).message}），回退 dist-renderer 产物。\n`,
           );
@@ -1102,8 +1131,9 @@ function createWindow(): void {
         return;
       }
       process.stderr.write(
-        `[main] 等待 dev server ${devServerUrl} 超时（${DEV_SERVER_WAIT_MS}ms），回退 dist-renderer 产物。` +
-          `若需热更新，请确认 vite 可正常启动（npm run dev:renderer）。\n`,
+        `[main] 等待 dev server 超时（${DEV_SERVER_WAIT_MS}ms），回退 dist-renderer 产物。` +
+          `若需热更新，请确认 vite 可正常启动（npm run dev:renderer）；` +
+          `若 vite 报端口占用，结束占用进程或调整 vite.config.ts 的 server.port。\n`,
       );
     }
     loadPackagedRenderer();
