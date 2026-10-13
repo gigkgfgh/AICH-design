@@ -305,6 +305,30 @@ export class GatewayHttpClient {
   }
 
   /**
+   * POST /v1/reload：让子进程按最新环境变量重建 adapter/imagePort（配置热重载）。
+   *
+   * 不重建服务器——端口、会话 token、在途 run 均保持不变。
+   * 旧版 agent-service 无此端点会返回 501，调用方据此回退到进程重启。
+   */
+  async reload(): Promise<{ adapter: string; image: string }> {
+    let res: Response;
+    try {
+      res = await fetch(`${this.baseUrl}/v1/reload`, {
+        method: 'POST',
+        headers: this.headers(),
+        signal: AbortSignal.timeout(30_000),
+      });
+    } catch (err) {
+      throw await this.networkError(err, '配置热重载失败');
+    }
+    if (!res.ok) {
+      throw await this.toHttpError(res);
+    }
+    const body = (await res.json()) as { adapter?: string; image?: string };
+    return { adapter: body.adapter ?? 'unknown', image: body.image ?? 'unknown' };
+  }
+
+  /**
    * HTTP 错误 → shared 错误码（10 码唯一权威）。
    * 优先解析统一错误响应体 { code, message }（backend errors.ts 结构）；
    * body 无 code 时按 HTTP 状态映射（与 httpStatusFor 保持一致）。

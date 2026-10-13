@@ -227,6 +227,42 @@ async function buildAgentServiceEnv(): Promise<Record<string, string>> {
   return env;
 }
 
+/**
+ * 配置热重载（首选路径）：重建注入用 env → 调 POST /v1/reload 让子进程自行换 adapter。
+ *
+ * 相比 `restartAgentService` 的优势：端口不变、会话 token 不失效、在途 run 跑完不受影响，
+ * 用户改一个 Key 不必等握手往返（此前需 3~15s，且中途对话会被打断）。
+ *
+ * 关键约束：配置是**通过 spawn env 注入**的，`loadConfig()` 只读 process.env。
+ * 因此必须把新配置写回 process.env，reload 才会读到——否则子进程仍在用旧值，
+ * 表现为「保存成功但配置没变」。
+ *
+ * 回退：子进程未就绪（status !== 'ready'）、无 gatewayClient、或 reload 端点不存在
+ * （旧版服务）时，退回 kill+重启。
+ */
+async function reloadAgentServiceConfig(): Promise<'reloaded' | 'restarted'> {
+  if (agentServiceStatus !== 'ready' || !gatewayClient) {
+    await restartAgentService();
+    return 'restarted';
+  }
+  try {
+    const env = await buildAgentServiceEnv();
+    // 撤掉上一轮注入的 AICH_* 键，避免"删除端点后旧值残留"——这正是全删无法生效的根因。
+    for (const key of Object.keys(process.env)) {
+      if (key.startsWith('AICH_') && !(key in env)) delete process.env[key];
+    }
+    Object.assign(process.env, env);
+    await gatewayClient.reload();
+    return 'reloaded';
+  } catch (err) {
+    process.stderr.write(
+      `[agent-service] 配置热重载失败（${(err as Error).message}），回退进程重启。\n`,
+    );
+    await restartAgentService();
+    return 'restarted';
+  }
+}
+
 /** 重启 agent-service（Key 配置变更后：kill → 重新握手；会话 token 缓存清空）。 */
 async function restartAgentService(): Promise<void> {
   const child = agentServiceChild;
@@ -717,9 +753,9 @@ function registerIpcHandlers(): void {
 
   handleIpc('secrets:saveKeys', (_e, input: KeyConfigInput): SecretsStatus => {
     if (!secrets) throw new Error('密钥服务未初始化');
-    // 保存（含清除）→ 重启 agent-service 使注入生效；同步返回状态
+    // 保存（含清除）→ 热重载使注入生效（失败自动回退重启）；同步返回状态
     const status = secrets.saveKeys(input);
-    void restartAgentService();
+    void reloadAgentServiceConfig();
     return status;
   });
 
@@ -733,7 +769,7 @@ function registerIpcHandlers(): void {
     ): SecretsStatus => {
       if (!secrets) throw new Error('密钥服务未初始化');
       const status = secrets.saveModels(entries, activeModelId);
-      void restartAgentService();
+      void reloadAgentServiceConfig();
       return status;
     },
   );
@@ -748,7 +784,7 @@ function registerIpcHandlers(): void {
     ): SecretsStatus => {
       if (!secrets) throw new Error('密钥服务未初始化');
       const status = secrets.saveImageModels(entries, activeImageModelId);
-      void restartAgentService();
+      void reloadAgentServiceConfig();
       return status;
     },
   );
@@ -770,7 +806,9 @@ function registerIpcHandlers(): void {
     isMaximized: BrowserWindow.getFocusedWindow()?.isMaximized() ?? false,
   }));
 
-  // R6-6：自定义会话目录（保存 → 重启服务生效；图像白名单/sessions IPC 同源切换）
+  // R6-6：自定义会话目录 —— **必须重启**（不可热重载）：
+  // 子进程已用旧路径构造 JsonlSessionStore / ImageRegistry 并持有目录句柄，
+  // 换目录不是 adapter 配置变更，重建这些实例只能靠重启进程。
   handleIpc('config:setSessionsDir', async (_e, dir: string): Promise<void> => {
     if (!secrets) throw new Error('密钥服务未初始化');
     if (typeof dir !== 'string') throw new Error('路径必须为字符串');
@@ -790,6 +828,8 @@ function registerIpcHandlers(): void {
   });
 
   // R6-9：Agent Loops 日志开关（写 settings，重启服务生效）
+  // 注：loopLog 属可热重载项（reload 回调会重新解析该开关并传给新 adapter），
+  // 但日志文件句柄在旧 adapter 内已打开，统一走重启更稳妥、语义也更直观。
   handleIpc('looplog:setEnabled', async (_e, enabled: boolean): Promise<void> => {
     if (!secrets) throw new Error('密钥服务未初始化');
     secrets.setSetting('app.loopLog', enabled ? '1' : '0');
@@ -804,7 +844,7 @@ function registerIpcHandlers(): void {
       throw new Error('轮次上限必须为 1~200 之间的整数');
     }
     secrets.setSetting('app.agent.maxToolCalls', String(n));
-    void restartAgentService();
+    void reloadAgentServiceConfig();
     return secrets.status();
   });
 

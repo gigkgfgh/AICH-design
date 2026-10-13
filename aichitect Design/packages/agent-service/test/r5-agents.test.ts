@@ -267,4 +267,106 @@ describe("网关 R5 扩展", () => {
     await expect(gateway.close()).resolves.toBeUndefined();
     await sse.body?.cancel().catch(() => {});
   });
+
+  /* ---- 配置热重载（POST /v1/reload）---- */
+
+  it("reload：仅进程级 token 可调用，且不重建服务器（端口/在途连接不变）", async () => {
+    let reloadCount = 0;
+    const runManager = new RunManager(new NullAdapter());
+    const gateway = await createHttpGateway({
+      adapterLabel: "stub-v1",
+      token: "proc",
+      runManager,
+      usageTracker: new UsageTracker(),
+      host: "127.0.0.1",
+      port: 0,
+      reload: async () => {
+        reloadCount += 1;
+        return { adapter: `stub-v${reloadCount + 1}`, image: "openai-image" };
+      },
+    });
+    try {
+      // 无 token → 401（不触发 reload）
+      expect((await fetch(`${gateway.url}/v1/reload`, { method: "POST" })).status).toBe(401);
+      expect(reloadCount).toBe(0);
+
+      // 错误 token → 401
+      expect(
+        (await fetch(`${gateway.url}/v1/reload`, { method: "POST", headers: { authorization: "Bearer wrong" } })).status,
+      ).toBe(401);
+      expect(reloadCount).toBe(0);
+
+      // 正确 token → 200，并回传新标签
+      const ok = await fetch(`${gateway.url}/v1/reload`, {
+        method: "POST",
+        headers: { authorization: "Bearer proc" },
+      });
+      expect(ok.status).toBe(200);
+      expect(await ok.json()).toMatchObject({ ok: true, adapter: "stub-v2", image: "openai-image" });
+      expect(reloadCount).toBe(1);
+
+      // 端口不变：reload 后原 url 仍可用（未重启服务器）
+      const health = await fetch(`${gateway.url}/v1/health`, { headers: { authorization: "Bearer proc" } });
+      expect(health.status).toBe(200);
+      // /v1/health 反映 reload 后的新标签
+      const healthBody = (await health.json()) as { adapter?: string };
+      expect(healthBody.adapter).toBe("stub-v2");
+
+      // 幂等：连续多次 reload 均成功
+      for (let i = 0; i < 3; i++) {
+        const again = await fetch(`${gateway.url}/v1/reload`, { method: "POST", headers: { authorization: "Bearer proc" } });
+        expect(again.status).toBe(200);
+      }
+      expect(reloadCount).toBe(4);
+    } finally {
+      await gateway.close();
+    }
+  });
+
+  it("reload 未提供回调时返回 501（调用方据此回退进程重启）", async () => {
+    const gateway = await createHttpGateway({
+      adapterLabel: "stub",
+      token: "proc",
+      runManager: new RunManager(new NullAdapter()),
+      usageTracker: new UsageTracker(),
+      host: "127.0.0.1",
+      port: 0,
+    });
+    try {
+      const res = await fetch(`${gateway.url}/v1/reload`, {
+        method: "POST",
+        headers: { authorization: "Bearer proc" },
+      });
+      expect(res.status).toBe(501);
+    } finally {
+      await gateway.close();
+    }
+  });
+
+  it("reload 回调抛错时返回 500，且不影响服务继续可用", async () => {
+    const gateway = await createHttpGateway({
+      adapterLabel: "stub",
+      token: "proc",
+      runManager: new RunManager(new NullAdapter()),
+      usageTracker: new UsageTracker(),
+      host: "127.0.0.1",
+      port: 0,
+      reload: async () => {
+        throw new Error("配置解析失败");
+      },
+    });
+    try {
+      const res = await fetch(`${gateway.url}/v1/reload`, {
+        method: "POST",
+        headers: { authorization: "Bearer proc" },
+      });
+      expect(res.status).toBe(500);
+      expect((await res.text()).length).toBeGreaterThan(0);
+      // 服务未被 reload 失败拖垮
+      const health = await fetch(`${gateway.url}/v1/health`, { headers: { authorization: "Bearer proc" } });
+      expect(health.status).toBe(200);
+    } finally {
+      await gateway.close();
+    }
+  });
 });

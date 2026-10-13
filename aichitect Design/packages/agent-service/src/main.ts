@@ -19,6 +19,7 @@ import { JsonlSessionStore } from "./session/jsonl-store.js";
 import { UsageTracker } from "./telemetry/usage-tracker.js";
 import { RunManager } from "./runtime/run-manager.js";
 import { RetryingRuntime } from "./runtime/task-queue.js";
+import { SwappableAdapter } from "./runtime/swappable-adapter.js";
 import { createHttpGateway } from "./gateway/http-server.js";
 import { SessionTokenManager } from "./gateway/session-tokens.js";
 import type { AgentRuntimePort } from "@aichdesign/shared";
@@ -346,9 +347,12 @@ export async function start(overrides: Partial<ReturnType<typeof loadConfig>> = 
     maxToolCalls: config.maxToolCalls,
     skills: externalSkills,
   });
+  // 配置热重载：把生效中的 adapter 收敛到可替换的槽位，使 POST /v1/reload 只需
+  // swap 内部实现，而不必重建服务器（端口/会话 token/在途 run 全部保持不变）。
+  const swappable = new SwappableAdapter(adapter, label);
   // P018：任务队列补强——启动级指数退避重试 + 死信登记 + 图像成本护栏（包裹内层 adapter）。
   const runtime = new RetryingRuntime({
-    inner: adapter,
+    inner: swappable,
     policy: { maxRetries: config.queue.maxRetries, baseDelayMs: config.queue.retryBaseDelayMs },
     sessionStore,
     imageCostLimitUsd: config.queue.imageCostLimitUsd,
@@ -356,6 +360,43 @@ export async function start(overrides: Partial<ReturnType<typeof loadConfig>> = 
   });
   const runManager = new RunManager(runtime);
   const sessionTokens = new SessionTokenManager();
+
+  /**
+   * 热重载：按最新环境变量重建 adapter/imagePort 并 swap 进槽位。
+   *
+   * 注意 imagePort 的特殊性：图像工具绑定（buildImageToolBindings）在启动时即被
+   * 闭包捕获，故换imagePort 必须一并重建 tools 与 adapter。已发出的在途 run 仍走
+   * 旧 adapter（reload 不打断请求），新请求走新配置。
+   */
+  const reload = async (): Promise<{ adapter: string; image: string }> => {
+    const next = loadConfig();
+    const { port: nextImagePort, label: nextImageLabel } = resolveImagePort(next, [imageRegistry.dir]);
+    const nextTools = [
+      ...buildImageToolBindings(nextImagePort),
+      ...buildSearchToolBindings(next.search),
+      buildDispatchToolBinding(),
+    ];
+    const resolved = await resolveAdapter({
+      tools: nextTools,
+      usageTracker,
+      sessionStore,
+      imageRegistry,
+      llm: next.llm,
+      llmModels: next.llmModels,
+      llmActiveId: next.llmActiveId,
+      loopLogPath: next.loopLog
+        ? nodePath.resolve(next.sessionsDir, "..", "logs", "agent-loops.jsonl")
+        : undefined,
+      maxToolCalls: next.maxToolCalls,
+      skills: loadSkillsFromDirs(
+        [next.builtinSkillsDir, next.skillsDir].filter((d): d is string => !!d && d.length > 0),
+        ["image-gen", "research"],
+      ),
+    });
+    await swappable.swap(resolved.adapter, resolved.label);
+    return { adapter: resolved.label, image: nextImageLabel };
+  };
+
   const gateway = await createHttpGateway({
     adapterLabel: label,
     token,
@@ -366,6 +407,7 @@ export async function start(overrides: Partial<ReturnType<typeof loadConfig>> = 
     skills: externalSkills,
     host: config.host,
     port: config.port,
+    reload,
   });
 
   const ready = { url: gateway.url, token, adapter: label, image: imageLabel, pid: process.pid };
@@ -378,7 +420,7 @@ export async function start(overrides: Partial<ReturnType<typeof loadConfig>> = 
     adapterLabel: label,
     stop: async () => {
       await gateway.close();
-      await adapter.dispose();
+      await swappable.dispose();
     },
   };
 }

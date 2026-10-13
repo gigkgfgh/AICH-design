@@ -47,6 +47,14 @@ export interface HttpGatewayOptions {
   skills?: ReadonlyArray<{ name: string; description: string }>;
   host?: string;
   port?: number;
+  /**
+   * 配置热重载回调（POST /v1/reload）。
+   *
+   * 缺省则该端点返回 501——此时只能走「杀进程重启」的老路。
+   * 提供时由调用方重建 adapter/port 并 swap 进 SwappableAdapter，**不重建服务器**：
+   * 端口不变、会话 token 不失效、在途 run 跑完不受影响。
+   */
+  reload?: () => Promise<{ adapter: string; image: string }>;
 }
 
 export interface HttpGateway {
@@ -76,9 +84,16 @@ class BodyTooLargeError extends Error {
 }
 
 export async function createHttpGateway(options: HttpGatewayOptions): Promise<HttpGateway> {
-  const { token, runManager, usageTracker, adapterLabel, imageRegistry } = options;
+  const { token, runManager, usageTracker, imageRegistry } = options;
   const sessionTokens = options.sessionTokens ?? new SessionTokenManager();
   const host = options.host ?? "127.0.0.1";
+
+  // 生效中的 adapter 标签。热重载后由 reload 回调更新，故用可变量而非初始快照。
+  let adapterLabelNow = options.adapterLabel;
+  const currentAdapterLabel = (): string => adapterLabelNow;
+  const setAdapterLabel = (next: string): void => {
+    adapterLabelNow = next;
+  };
 
   const server: Server = createServer((req, res) => {
     void handleRequest(req, res).catch((error) => {
@@ -214,9 +229,34 @@ export async function createHttpGateway(options: HttpGatewayOptions): Promise<Ht
         return;
       }
       if (url.pathname === "/v1/health") {
-        sendJson(res, 200, { ok: true, adapter: adapterLabel, pid: process.pid, uptimeMs: Math.round(process.uptime() * 1000) });
+        // adapterLabel 可能在热重载后变化——每次现取（reload 回调会更新闭包捕获的 label）。
+        sendJson(res, 200, { ok: true, adapter: currentAdapterLabel(), pid: process.pid, uptimeMs: Math.round(process.uptime() * 1000) });
       } else {
         sendJson(res, 200, usageTracker.summary());
+      }
+      return;
+    }
+
+    // POST /v1/reload：按最新环境变量重建 adapter/imagePort 并热切换，
+    // 不重建服务器（端口与在途 run 均不受影响）。仅进程级 token 可调用。
+    if (method === "POST" && url.pathname === "/v1/reload") {
+      if (!isProcessToken(req)) {
+        unauthorized(res);
+        return;
+      }
+      if (!options.reload) {
+        sendJson(res, 501, makeError(ErrorCode.INVALID_REQUEST, "当前服务未启用配置热重载（需重启进程生效）"));
+        return;
+      }
+      try {
+        const next = await options.reload();
+        setAdapterLabel(next.adapter);
+        process.stdout.write(
+          `AICH_GATEWAY_RELOADED ${JSON.stringify({ adapter: next.adapter, image: next.image, pid: process.pid })}\n`,
+        );
+        sendJson(res, 200, { ok: true, ...next });
+      } catch (error) {
+        sendJson(res, 500, makeError(ErrorCode.INTERNAL_ERROR, error instanceof Error ? error.message : String(error)));
       }
       return;
     }
