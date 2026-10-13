@@ -135,8 +135,16 @@ export function ChatPanel(props: ChatPanelProps): ReactElement {
     }
   }, [messages.length, messages[messages.length - 1]?.text, variant]);
 
-  /** textarea 自动增高（CSS max-height 200px 限幅）。 */
+  /**
+   * textarea 自动增高（CSS max-height 200px 限幅）。
+   *
+   * 中文输入法注意事项：组合期间（isComposing）必须**跳过**重算。
+   * 重算会先把 height 置为 'auto'，此刻 textarea 尺寸未定，Chromium 的 IME
+   * 候选窗失去锚点 → 合成被打断，表现为「光标消失、按键丢字」。
+   * 组合结束时（compositionend）再补一次重算即可。
+   */
   function autoResize(el: HTMLTextAreaElement): void {
+    if (el.dataset.composing === 'true') return;
     el.style.height = 'auto';
     el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
   }
@@ -304,8 +312,10 @@ export function ChatPanel(props: ChatPanelProps): ReactElement {
           onCompositionStart={() => {
             if (inputRef.current) inputRef.current.dataset.composing = 'true';
           }}
-          onCompositionEnd={() => {
+          onCompositionEnd={(e) => {
             if (inputRef.current) inputRef.current.dataset.composing = 'false';
+            // 组合期间跳过了高度重算，此处补一次，否则中文长句会截断显示。
+            autoResize(e.currentTarget);
           }}
           aria-label="对话输入"
           autoFocus={variant === 'idle'}
