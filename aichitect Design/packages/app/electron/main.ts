@@ -19,6 +19,7 @@ import { fileURLToPath } from 'node:url';
 import { spawn, ChildProcess } from 'node:child_process';
 import { GatewayHttpClient, GatewayHttpError } from './gatewayClient.js';
 import { SecretsService, SECRETS_REFS as REFS } from './secretsService.js';
+import { shouldFallBackToLegacy } from './legacy-config.js';
 import { isTrustedIpcSender } from './ipc-guard.js';
 import type {
   AgentRequest,
@@ -172,12 +173,18 @@ async function buildAgentServiceEnv(): Promise<Record<string, string>> {
       const n = Number(maxToolCalls);
       if (Number.isFinite(n) && n >= 1) env.AICH_AGENT_MAX_TOOL_CALLS = String(Math.min(200, Math.floor(n)));
     }
-    // R6-14：多图像服务商条目优先（Key 解密注入）；无条目回退旧单字段，
-    // 且解除原 if(imageKey) 门控——baseUrl/model 独立注入（此前 Key 缺失时三者全丢）。
+    // R6-14：多图像服务商条目优先（Key 解密注入）；无条目回退旧单字段。
+    // 注意：旧单字段由 saveImageModels 在条目清空时一并删除，此处回退仅服务
+    // 「从未用过新条目、只有历史单字段配置」的老用户。
     const imageEntries = secrets.imageModelsForInjection();
+    const imageStatusEntryCount = secrets.status().imageModels?.length ?? 0;
+    const imageFallback = shouldFallBackToLegacy(imageEntries.length, imageStatusEntryCount);
     if (imageEntries.length > 0) {
       env.AICH_IMAGE_MODELS = JSON.stringify(imageEntries);
       env.AICH_IMAGE_ACTIVE_ID = secrets.activeImageModelId();
+    } else if (!imageFallback.allow) {
+      // 条目存在但均未通过注入校验 → 不回退旧单字段（同 R7-2 口径，避免"假接线"）
+      process.stderr.write('[main] 图像条目存在但均未通过注入校验（见 [secrets] 诊断行），不回退旧单字段配置；请在 设置 → 图像端点 重新保存\n');
     } else {
       const imageKey = await secrets.readSecret(REFS.imageApiKey);
       if (imageKey) env.AICH_IMAGE_API_KEY = imageKey;
@@ -187,13 +194,14 @@ async function buildAgentServiceEnv(): Promise<Record<string, string>> {
       if (model) env.AICH_IMAGE_MODEL = model;
     }
     const llmKey = await secrets.readSecret(REFS.llmApiKey);
-    const secretsStatusHasModels = (secrets.status().models?.length ?? 0) > 0;
     const modelEntries = secrets.modelsForInjection();
+    const llmStatusEntryCount = secrets.status().models?.length ?? 0;
+    const llmFallback = shouldFallBackToLegacy(modelEntries.length, llmStatusEntryCount);
     if (modelEntries.length > 0) {
       // R6-6：多模型注入（每条目独立 baseUrl/Key/thinking；agent-service 按条目建 provider）
       env.AICH_LLM_MODELS = JSON.stringify(modelEntries);
       env.AICH_LLM_ACTIVE_ID = secrets.activeModelId();
-    } else if (secretsStatusHasModels) {
+    } else if (!llmFallback.allow) {
       // R7-2：条目存在但全部未通过注入校验 → 不回退旧单字段（残留的旧端点会成为"假接线"，
       // 症状恰似"重启后必须重新保存才能用"）；宁不注入并明确告警（服务照常启动，对话侧显式报错）。
       process.stderr.write('[main] 模型条目存在但均未通过注入校验（见 [secrets] 诊断行），不回退旧单字段配置；请在 设置 → LLM 端点 重新保存\n');

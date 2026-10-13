@@ -134,11 +134,65 @@ export class SecretsService {
         imageModels: Array.isArray(parsed.imageModels) ? parsed.imageModels : undefined,
         activeImageModelId: typeof parsed.activeImageModelId === 'string' ? parsed.activeImageModelId : undefined,
       };
+      this.migrateOrphanLegacyFields(this.cache);
     } catch {
       process.stderr.write(`[secrets] secrets.json 损坏，按空库重建（旧文件不可读）\n`);
       this.cache = { ...EMPTY_FILE, secrets: {}, settings: {} };
     }
     return this.cache;
+  }
+
+  /**
+   * 一次性迁移：清理「条目已空、但旧单字段仍在」的孤儿配置。
+   *
+   * 背景：本项目的端点配置有两套存储——新的多条目列表与历史旧单字段。
+   * 主进程在条目列表为空时会回退读旧单字段，于是形成「假删除」：
+   * 用户在 UI 里删掉了端点，只是从新列表消失，旧的 baseUrl/model/Key
+   * 仍被重新接线，服务照常可用。
+   *
+   * saveModels([]) / saveImageModels([]) 现在会同步清除旧字段，但**存量用户**
+   * 的 secrets.json 里早已沉积这些残留，且在下次手动保存前不会被动清理。
+   * 故在 load() 时主动修一次：条目为空即清除对应旧字段。
+   *
+   * 注意不触碰条目非空的场景——老用户仅配过旧单字段时（models 为 undefined），
+   * 那是合法的兼容回退来源，不能删。
+   */
+  private migrateOrphanLegacyFields(file: SecretsFile): void {
+    let changed = false;
+    // 仅当字段显式为空数组时才清理；undefined = 从未用过新列表，属合法回退来源。
+    if (Array.isArray(file.models) && file.models.length === 0) {
+      for (const ref of [SECRETS_REFS.llmBaseUrl, SECRETS_REFS.llmModel]) {
+        if (file.settings[ref] !== undefined) {
+          delete file.settings[ref];
+          changed = true;
+        }
+      }
+      if (file.secrets[SECRETS_REFS.llmApiKey] !== undefined) {
+        delete file.secrets[SECRETS_REFS.llmApiKey];
+        changed = true;
+      }
+      // deepseek 检索复用模型条目的凭据；条目已空则该provider 已无支撑。
+      if (file.settings[SECRETS_REFS.searchProvider] === 'deepseek') {
+        delete file.settings[SECRETS_REFS.searchProvider];
+        changed = true;
+      }
+    }
+    if (Array.isArray(file.imageModels) && file.imageModels.length === 0) {
+      for (const ref of [SECRETS_REFS.imageBaseUrl, SECRETS_REFS.imageModel]) {
+        if (file.settings[ref] !== undefined) {
+          delete file.settings[ref];
+          changed = true;
+        }
+      }
+      if (file.secrets[SECRETS_REFS.imageApiKey] !== undefined) {
+        delete file.secrets[SECRETS_REFS.imageApiKey];
+        changed = true;
+      }
+    }
+    if (changed) {
+      process.stderr.write('[secrets] 已清理孤儿旧端点配置（条目为空但旧单字段残留，可能表现为「删除后仍可用」）\n');
+      this.flush();
+    }
   }
 
   private flush(): void {
@@ -263,6 +317,19 @@ export class SecretsService {
       };
     });
     file.activeModelId = file.models.some((m) => m.id === activeModelId) ? activeModelId : (file.models[0]?.id ?? '');
+    // 关键：条目清空时必须一并清除 LLM 旧单字段。
+    // 否则主进程 buildAgentServiceEnv 的「旧单模型回退分支」会读回这些残留值并重新接线，
+    // 表现为「删除端点后依然可用」——用户以为删了，实际只是从新列表消失、旧的还在生效。
+    if (file.models.length === 0) {
+      delete file.settings[SECRETS_REFS.llmBaseUrl];
+      delete file.settings[SECRETS_REFS.llmModel];
+      delete file.secrets[SECRETS_REFS.llmApiKey];
+      // 联网检索的 deepseek 模式复用模型条目的 baseUrl/model/key；条目已空，
+      // 留着 provider 却无凭据只会让检索静默失败，故一并关闭。
+      if (file.settings[SECRETS_REFS.searchProvider] === 'deepseek') {
+        delete file.settings[SECRETS_REFS.searchProvider];
+      }
+    }
     this.flush();
     return this.status();
   }
@@ -335,6 +402,13 @@ export class SecretsService {
     file.activeImageModelId = file.imageModels.some((m) => m.id === activeImageModelId)
       ? activeImageModelId
       : (file.imageModels[0]?.id ?? '');
+    // 同 saveModels：条目清空时清除图像旧单字段。必要性更高——imageEntriesView
+    // 会凭旧字段「凭空造出一个默认条目」，不清则删除后立刻又冒出来。
+    if (file.imageModels.length === 0) {
+      delete file.settings[SECRETS_REFS.imageBaseUrl];
+      delete file.settings[SECRETS_REFS.imageModel];
+      delete file.secrets[SECRETS_REFS.imageApiKey];
+    }
     this.flush();
     return this.status();
   }
