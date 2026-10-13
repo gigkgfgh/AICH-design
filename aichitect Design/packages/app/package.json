@@ -8,7 +8,7 @@
   "scripts": {
     "dev": "concurrently -k \"npm:dev:renderer\" \"npm:dev:electron\"",
     "dev:renderer": "vite",
-    "dev:electron": "npm run build:electron && electron .",
+    "dev:electron": "npm run build:electron && node scripts/dev-electron.mjs",
     "build": "npm run typecheck && npm run build:electron && vite build",
     "build:electron": "tsc -p tsconfig.electron.json",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.electron.json",

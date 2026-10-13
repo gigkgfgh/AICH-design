@@ -956,6 +956,37 @@ function isTrustedDevUrl(url: string): boolean {
 /** E6：dev 模式默认 dev server（与 vite.config.ts server.port/strictPort 对齐）。 */
 const DEFAULT_DEV_SERVER_URL = 'http://127.0.0.1:5173';
 
+/** 等待 vite dev server 就绪的上限；`concurrently` 并行启动时 vite 常需数秒。 */
+const DEV_SERVER_WAIT_MS = 30_000;
+const DEV_SERVER_POLL_MS = 250;
+
+/**
+ * 轮询等待 dev server 可响应（首包即返回，不等 index 完整）。
+ *
+ * 用 GET 而非仅 TCP 探测：vite 端口监听就绪即视为可用，避免误判。
+ * 失败重试由调用方决定（回退 dist-renderer），此处只报告是否就绪。
+ */
+async function waitForDevServer(url: string, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  let lastError = 'unknown';
+  while (Date.now() < deadline) {
+    if (mainWindow === null || mainWindow.isDestroyed()) return false;
+    try {
+      const res = await fetch(url, { method: 'GET' });
+      if (res.status < 500) {
+        await res.body?.cancel().catch(() => {});
+        return true;
+      }
+      lastError = `HTTP ${res.status}`;
+    } catch (err) {
+      lastError = (err as Error).message;
+    }
+    await new Promise((resolve) => setTimeout(resolve, DEV_SERVER_POLL_MS));
+  }
+  process.stderr.write(`[main] dev server ${url} 未就绪：${lastError}\n`);
+  return false;
+}
+
 function createWindow(): void {
   // R6-14：无边框窗口（ZCode 同构）——Windows/Linux frame:false（渲染层自绘窗口按钮），
   // macOS 保留系统红绿灯（titleBarStyle hidden）。backgroundColor 与暗色主题一致。
@@ -987,10 +1018,25 @@ function createWindow(): void {
   mainWindow.on('maximize', sendChromeState);
   mainWindow.on('unmaximize', sendChromeState);
 
+  // 渲染进程崩溃此前无任何提示，用户只看到黑屏。最常见诱因是 GPU 进程不可用
+  // （虚拟机 / 远程桌面 / 老旧显卡驱动下 Chromium 会以 STATUS_BREAKPOINT 崩）。
+  // 这里把崩溃原因直接打到 stderr，并给出可操作的处理方式。
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    process.stderr.write(
+      `[main] 渲染进程已退出（reason=${details.reason} exitCode=${details.exitCode}）。` +
+        `窗口将保持空白。若为 GPU 相关崩溃，请尝试以参数启动：` +
+        `npm run dev -- --in-process-gpu，或设置 ELECTRON_DISABLE_GPU=1。\n`,
+    );
+  });
+
   // 开发：加载 Vite dev server（仅可信本机地址）；否则加载 packages/app/dist-renderer 产物。
   // E6：dev 下未显式给 VITE_DEV_SERVER_URL 时，默认指向 vite 固定端口 5173
   // （vite.config.ts strictPort），使 `npm run dev` 的热更新默认生效，而非静默退回
   // dist-renderer 旧产物（表现为"改了代码不刷新"）。
+  //
+  // dev server 可能尚未就绪（`concurrently` 并行启动，electron 常早于 vite ready），
+  // 或端口被占用导致 vite 起不来。loadURL 失败不会自动重试——窗口会永久停在错误页，
+  // 表现为"黑屏"。故先轮询等待就绪，超时再回退 dist-renderer 产物。
   const envDevUrl = process.env.VITE_DEV_SERVER_URL;
   const devServerUrl =
     envDevUrl && isTrustedDevUrl(envDevUrl)
@@ -999,10 +1045,41 @@ function createWindow(): void {
         ? DEFAULT_DEV_SERVER_URL
         : null;
   const rendererHtml = path.join(__dirname, '..', '..', 'dist-renderer', 'index.html');
-  if (devServerUrl) {
-    void mainWindow.loadURL(devServerUrl);
-  } else {
-    void mainWindow.loadFile(rendererHtml);
+  // dev server 可能尚未就绪（`concurrently` 并行启动，electron 通常早于 vite ready
+  // 数秒）。`loadURL` 失败不会自动重试，等待窗口会永久停在错误页——这是"黑屏"的
+  // 直接原因。故先轮询等待就绪，再加载；超时则回退 dist-renderer 产物。
+  void (async () => {
+    if (devServerUrl) {
+      const ready = await waitForDevServer(devServerUrl, DEV_SERVER_WAIT_MS);
+      if (!mainWindow || mainWindow.isDestroyed()) return;
+      if (ready) {
+        void mainWindow.loadURL(devServerUrl).catch((err: unknown) => {
+          process.stderr.write(
+            `[main] dev server 在就绪后仍加载失败（${(err as Error).message}），回退 dist-renderer 产物。\n`,
+          );
+          loadPackagedRenderer();
+        });
+        return;
+      }
+      process.stderr.write(
+        `[main] 等待 dev server ${devServerUrl} 超时（${DEV_SERVER_WAIT_MS}ms），回退 dist-renderer 产物。` +
+          `若需热更新，请确认 vite 可正常启动（npm run dev:renderer）。\n`,
+      );
+    }
+    loadPackagedRenderer();
+  })();
+
+  function loadPackagedRenderer(): void {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    if (fs.existsSync(rendererHtml)) {
+      void mainWindow.loadFile(rendererHtml);
+    } else {
+      // 不给用户留黑屏：缺产物时明确报错，并提示先构建。
+      process.stderr.write(
+        `[main] dist-renderer 产物缺失（${rendererHtml}）。` +
+          `请执行 npm run build -w @aichdesign/app 生成渲染层产物，或确认 vite dev server 已就绪。\n`,
+      );
+    }
   }
 
   mainWindow.on('closed', () => {
